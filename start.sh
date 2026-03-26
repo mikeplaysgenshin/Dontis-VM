@@ -54,6 +54,14 @@ Xvnc :${DISPLAY_NUM} \
 echo "Waiting for Xvnc to start..."
 sleep 3
 
+echo "Setting up CJK fonts..."
+NOTO_CJK_SANS=/nix/store/6jh0rswqwn4bif41mvyyyc49fvnfwr89-noto-fonts-cjk-sans-2.004/share/fonts/opentype/noto-cjk
+NOTO_CJK_SERIF=/nix/store/1xabh12b0c3v4c69n094ny813d606wsx-noto-fonts-cjk-serif-2.002/share/fonts/opentype/noto-cjk
+mkdir -p ~/.fonts
+cp -f $NOTO_CJK_SANS/*.ttc ~/.fonts/ 2>/dev/null || true
+cp -f $NOTO_CJK_SERIF/*.ttc ~/.fonts/ 2>/dev/null || true
+fc-cache -f ~/.fonts/ 2>/dev/null || true
+
 echo "Setting desktop background..."
 $XSETROOT -solid '#1a3a5c'
 
