@@ -13,8 +13,16 @@ BlobeVM is a virtual desktop environment that runs in a web browser. In this Rep
 The "Start application" workflow runs `start.sh` which:
 1. Cleans up any previous VNC sessions
 2. Sets up VNC authentication
-3. Starts Xvnc on port 5000
-4. Starts Fluxbox window manager
+3. Starts Xvnc on port 5901
+4. Sets desktop background color
+5. Starts Fluxbox window manager
+6. Launches Chromium browser open to google.com
+7. Launches an xterm terminal
+8. Starts noVNC on port 5000 for browser access
+
+## Installed Apps
+- **Chromium 138** — Opens Google on startup (from Nix store)
+- **xterm** — Terminal emulator (from Nix store)
 
 ## Original Project
 The original BlobeVM project (in `BlobeVM-main/`) uses Docker + KasmVNC to provide a full desktop environment. The Dockerfile builds an Ubuntu image with a choice of desktop environment (XFCE4, KDE, GNOME, etc.). This Docker approach does not work in Replit due to security restrictions on running privileged containers.
