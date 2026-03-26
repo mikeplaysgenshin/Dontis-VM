@@ -3,9 +3,12 @@ set -e
 
 NOVNC=/nix/store/0a18wyirbc3ls9yvlw33lrmql94n2hmc-novnc-1.5.0/bin/novnc
 NOVNC_SHARE=/nix/store/0a18wyirbc3ls9yvlw33lrmql94n2hmc-novnc-1.5.0/share/webapps/novnc
+XTERM=/nix/store/ai4gqjimfc2ji48y3v0b2z7f9av6xwfn-xterm-397/bin/xterm
+XSETROOT=/nix/store/21rcnlwxh0qvlc12whjiscb5qmf5nq8a-xsetroot-1.1.3/bin/xsetroot
 VNC_PORT=5901
 WEB_PORT=5000
 DISPLAY_NUM=1
+export DISPLAY=:${DISPLAY_NUM}
 
 echo "Cleaning up any previous sessions..."
 pkill -f "Xvnc :${DISPLAY_NUM}" 2>/dev/null || true
@@ -49,8 +52,15 @@ Xvnc :${DISPLAY_NUM} \
 echo "Waiting for Xvnc to start..."
 sleep 3
 
+echo "Setting desktop background..."
+$XSETROOT -solid '#1a3a5c'
+
 echo "Starting Fluxbox window manager..."
-DISPLAY=:${DISPLAY_NUM} fluxbox &>/tmp/fluxbox.log &
+fluxbox &>/tmp/fluxbox.log &
+sleep 2
+
+echo "Launching terminal..."
+$XTERM -fa 'Monospace' -fs 12 -title 'Terminal' -bg '#0d1117' -fg '#e6edf3' -geometry 100x30+50+50 &
 sleep 1
 
 echo "Starting noVNC web interface on port ${WEB_PORT}..."
