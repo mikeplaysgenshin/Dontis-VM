@@ -6,7 +6,11 @@ NOVNC_SHARE=/nix/store/0a18wyirbc3ls9yvlw33lrmql94n2hmc-novnc-1.5.0/share/webapp
 XTERM=/nix/store/ai4gqjimfc2ji48y3v0b2z7f9av6xwfn-xterm-397/bin/xterm
 XSETROOT=/nix/store/21rcnlwxh0qvlc12whjiscb5qmf5nq8a-xsetroot-1.1.3/bin/xsetroot
 CHROMIUM_BIN=/nix/store/884ygjschxqkrkpkrhq83bicvzgj7vb8-chromium-unwrapped-138.0.7204.100/libexec/chromium/chromium
+PULSEAUDIO=/nix/store/px08h5pmb6vr98y751ck1gwn0852iqqq-pulseaudio-17.0/bin/pulseaudio
+PACTL=/nix/store/px08h5pmb6vr98y751ck1gwn0852iqqq-pulseaudio-17.0/bin/pactl
 VNC_PORT=5901
+# noVNC runs internally on 4998; audio proxy sits on 5000 and forwards to it
+NOVNC_INTERNAL_PORT=4998
 WEB_PORT=5000
 DISPLAY_NUM=1
 export DISPLAY=:${DISPLAY_NUM}
@@ -16,8 +20,26 @@ pkill -f "Xvnc :${DISPLAY_NUM}" 2>/dev/null || true
 pkill -f "novnc" 2>/dev/null || true
 pkill -f "fluxbox" 2>/dev/null || true
 pkill -f "chromium" 2>/dev/null || true
+pkill -f "pulseaudio" 2>/dev/null || true
+pkill -f "audio_proxy.py" 2>/dev/null || true
 rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM} 2>/dev/null || true
 sleep 1
+
+echo "Setting up PulseAudio..."
+mkdir -p ~/.config/pulse
+cat > ~/.config/pulse/daemon.conf <<'PULSE_EOF'
+default-sample-rate = 44100
+default-sample-channels = 2
+default-sample-format = s16le
+PULSE_EOF
+
+# Start PulseAudio as a daemon
+$PULSEAUDIO --start --log-target=file:/tmp/pulse.log --exit-idle-time=-1 2>/dev/null || true
+sleep 2
+
+# Create a null output sink named virtual_speaker so ffmpeg can capture it
+$PACTL load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description=virtual_speaker 2>/dev/null || true
+$PACTL set-default-sink virtual_speaker 2>/dev/null || true
 
 echo "Setting up custom noVNC web directory..."
 mkdir -p /tmp/novnc-web
@@ -36,6 +58,15 @@ cat > /tmp/novnc-web/index.html <<'EOF'
 </body>
 </html>
 EOF
+
+# Inject the audio player widget into noVNC's vnc.html
+VNC_HTML=$NOVNC_SHARE/vnc.html
+if [ -f "$VNC_HTML" ]; then
+  rm -f /tmp/novnc-web/vnc.html
+  cp "$VNC_HTML" /tmp/novnc-web/vnc.html
+  # Append audio widget script before </body>
+  sed -i 's|</body>|<style>#blobevm-audio-widget{position:fixed;bottom:18px;right:18px;z-index:9999;background:rgba(20,30,48,0.92);border-radius:12px;padding:10px 16px;display:flex;align-items:center;gap:10px;box-shadow:0 4px 24px rgba(0,0,0,0.5);font-family:sans-serif;color:#e6edf3;font-size:13px;} #blobevm-audio-widget button{background:#1a6fd4;border:none;border-radius:7px;color:#fff;padding:6px 14px;cursor:pointer;font-size:13px;} #blobevm-audio-widget button:hover{background:#2388ff;}</style><div id="blobevm-audio-widget"><span>🔊 Sound</span><button id="audio-btn" onclick="toggleAudio()">Enable</button><audio id="vm-audio" src="/audio.ogg" preload="none"></audio></div><script>var audioEnabled=false;function toggleAudio(){var a=document.getElementById("vm-audio");var b=document.getElementById("audio-btn");if(!audioEnabled){a.play();audioEnabled=true;b.textContent="Mute";}else{a.pause();audioEnabled=false;b.textContent="Enable";}}</script></body>|' /tmp/novnc-web/vnc.html
+fi
 
 echo "Setting up VNC password..."
 mkdir -p ~/.vnc
@@ -85,5 +116,9 @@ echo "Launching terminal..."
 $XTERM -fa 'Monospace' -fs 12 -title 'Terminal' -bg '#0d1117' -fg '#e6edf3' -geometry 100x20+50+400 &
 sleep 1
 
-echo "Starting noVNC web interface on port ${WEB_PORT}..."
-exec $NOVNC --listen ${WEB_PORT} --vnc localhost:${VNC_PORT} --web /tmp/novnc-web
+echo "Starting noVNC web interface on internal port ${NOVNC_INTERNAL_PORT}..."
+$NOVNC --listen ${NOVNC_INTERNAL_PORT} --vnc localhost:${VNC_PORT} --web /tmp/novnc-web &>/tmp/novnc.log &
+sleep 2
+
+echo "Starting audio proxy on port ${WEB_PORT} (forwards to noVNC on ${NOVNC_INTERNAL_PORT})..."
+exec python3 audio_proxy.py

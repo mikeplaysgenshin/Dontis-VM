@@ -1,3 +1,4 @@
+modules = ["python-3.11"]
 [nix]
 channel = "stable-25_05"
 
@@ -31,6 +32,10 @@ waitForPort = 5000
 [[ports]]
 localPort = 3000
 externalPort = 3000
+
+[[ports]]
+localPort = 4998
+externalPort = 3001
 
 [[ports]]
 localPort = 5000
