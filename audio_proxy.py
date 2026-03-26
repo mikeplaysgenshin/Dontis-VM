@@ -328,6 +328,25 @@ def _handle(client):
 
     if method == 'GET' and path in ('/', '/index.html'):
         threading.Thread(target=_serve_html, args=(client, WRAPPER_HTML), daemon=True).start()
+    elif method == 'GET' and path == '/favicon.ico':
+        # Serve a minimal 1x1 transparent ICO to stop browser 404 noise
+        ICO = (b'\x00\x00\x01\x00\x01\x00\x01\x01\x00\x00\x01\x00\x18\x00'
+               b'\x30\x00\x00\x00\x16\x00\x00\x00\x28\x00\x00\x00\x01\x00'
+               b'\x00\x00\x02\x00\x00\x00\x01\x00\x18\x00\x00\x00\x00\x00'
+               b'\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+               b'\x00\x00\x00\x00\x00\x00\x1a\x3a\x5c\x00\x00\x00\x00\x00')
+        resp = (b'HTTP/1.1 200 OK\r\nContent-Type: image/x-icon\r\n'
+                b'Cache-Control: max-age=86400\r\nContent-Length: '
+                + str(len(ICO)).encode() + b'\r\n\r\n' + ICO)
+        try:
+            client.sendall(resp)
+        except Exception:
+            pass
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
     elif path == '/audio-ws' and is_ws:
         threading.Thread(target=_stream_pcm_ws, args=(client, buf), daemon=True).start()
     elif path in ('/audio', '/audio.ogg'):

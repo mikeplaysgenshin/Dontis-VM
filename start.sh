@@ -9,7 +9,6 @@ CHROMIUM_BIN=/nix/store/884ygjschxqkrkpkrhq83bicvzgj7vb8-chromium-unwrapped-138.
 PULSEAUDIO=/nix/store/px08h5pmb6vr98y751ck1gwn0852iqqq-pulseaudio-17.0/bin/pulseaudio
 PACTL=/nix/store/px08h5pmb6vr98y751ck1gwn0852iqqq-pulseaudio-17.0/bin/pactl
 VNC_PORT=5901
-# noVNC runs internally on 4998; audio proxy sits on 5000 and forwards to it
 NOVNC_INTERNAL_PORT=4998
 WEB_PORT=5000
 DISPLAY_NUM=1
@@ -33,40 +32,19 @@ default-sample-channels = 2
 default-sample-format = s16le
 PULSE_EOF
 
-# Start PulseAudio as a daemon
 $PULSEAUDIO --start --log-target=file:/tmp/pulse.log --exit-idle-time=-1 2>/dev/null || true
 sleep 2
 
-# Ensure a null output sink exists (named 'null') so ffmpeg can capture from null.monitor
+# Load null sink so ffmpeg can capture from null.monitor
 $PACTL load-module module-null-sink 2>/dev/null || true
 $PACTL set-default-sink null 2>/dev/null || true
 
-echo "Setting up custom noVNC web directory..."
+echo "Setting up noVNC web directory..."
 mkdir -p /tmp/novnc-web
 ln -sf $NOVNC_SHARE/* /tmp/novnc-web/ 2>/dev/null || true
-cat > /tmp/novnc-web/index.html <<'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>BlobeVM Desktop</title>
-  <meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=true&password=password&resize=scale">
-  <script>window.location.href = 'vnc.html?autoconnect=true&password=password&resize=scale';</script>
-</head>
-<body>
-  <p>Loading BlobeVM Desktop... <a href="vnc.html?autoconnect=true&password=password&resize=scale">Click here if not redirected</a></p>
-</body>
-</html>
-EOF
-
-# Inject the audio player widget into noVNC's vnc.html
-VNC_HTML=$NOVNC_SHARE/vnc.html
-if [ -f "$VNC_HTML" ]; then
-  rm -f /tmp/novnc-web/vnc.html
-  cp "$VNC_HTML" /tmp/novnc-web/vnc.html
-  # Append audio widget script before </body>
-  sed -i 's|</body>|<style>#blobevm-audio-widget{position:fixed;bottom:18px;right:18px;z-index:9999;background:rgba(20,30,48,0.92);border-radius:12px;padding:10px 16px;display:flex;align-items:center;gap:10px;box-shadow:0 4px 24px rgba(0,0,0,0.5);font-family:sans-serif;color:#e6edf3;font-size:13px;} #blobevm-audio-widget button{background:#1a6fd4;border:none;border-radius:7px;color:#fff;padding:6px 14px;cursor:pointer;font-size:13px;} #blobevm-audio-widget button:hover{background:#2388ff;}</style><div id="blobevm-audio-widget"><span>🔊 Sound</span><button id="audio-btn" onclick="toggleAudio()">Enable</button><audio id="vm-audio" src="/audio.ogg" preload="none"></audio></div><script>var audioEnabled=false;function toggleAudio(){var a=document.getElementById("vm-audio");var b=document.getElementById("audio-btn");if(!audioEnabled){a.play();audioEnabled=true;b.textContent="Mute";}else{a.pause();audioEnabled=false;b.textContent="Enable";}}</script></body>|' /tmp/novnc-web/vnc.html
-fi
+# Use a clean vnc.html (no audio injection — audio controls are in the wrapper page)
+rm -f /tmp/novnc-web/vnc.html
+cp "$NOVNC_SHARE/vnc.html" /tmp/novnc-web/vnc.html
 
 echo "Setting up VNC password..."
 mkdir -p ~/.vnc
@@ -102,10 +80,9 @@ sleep 2
 
 echo "Launching Chromium browser..."
 export CHROME_DEVEL_SANDBOX=/nix/store/c5mij30612sfy40hl94yr5vcrhw17nwb-chromium-138.0.7204.100-sandbox/bin/__chromium-suid-sandbox
+# Tell Chromium explicitly where PulseAudio is so it routes audio through the null sink
 export PULSE_SERVER=/var/run/pulse/native
-export PADSP=/nix/store/px08h5pmb6vr98y751ck1gwn0852iqqq-pulseaudio-17.0/bin/padsp
-# Use padsp to route any ALSA output through PulseAudio (handles both native PA and ALSA fallback)
-$PADSP $CHROMIUM_BIN \
+$CHROMIUM_BIN \
   --no-sandbox \
   --disable-dev-shm-usage \
   --disable-setuid-sandbox \
@@ -119,9 +96,9 @@ echo "Launching terminal..."
 $XTERM -fa 'Monospace' -fs 12 -title 'Terminal' -bg '#0d1117' -fg '#e6edf3' -geometry 100x20+50+400 &
 sleep 1
 
-echo "Starting noVNC web interface on internal port ${NOVNC_INTERNAL_PORT}..."
+echo "Starting noVNC on internal port ${NOVNC_INTERNAL_PORT}..."
 $NOVNC --listen ${NOVNC_INTERNAL_PORT} --vnc localhost:${VNC_PORT} --web /tmp/novnc-web &>/tmp/novnc.log &
 sleep 2
 
-echo "Starting audio proxy on port ${WEB_PORT} (forwards to noVNC on ${NOVNC_INTERNAL_PORT})..."
+echo "Starting audio proxy on port ${WEB_PORT}..."
 exec python3 audio_proxy.py
