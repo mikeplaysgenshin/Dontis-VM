@@ -1,36 +1,41 @@
 #!/bin/bash
 set -e
 
-echo "Starting Docker daemon if not running..."
-if ! docker info &>/dev/null; then
-  dockerd &>/tmp/dockerd.log &
-  echo "Waiting for Docker daemon to start..."
-  for i in $(seq 1 30); do
-    if docker info &>/dev/null; then
-      echo "Docker daemon is ready."
-      break
-    fi
-    sleep 1
-  done
-fi
+export DISPLAY=:1
 
-echo "Stopping any existing BlobeVM container..."
-docker stop BlobeVM 2>/dev/null || true
-docker rm BlobeVM 2>/dev/null || true
+echo "Cleaning up any previous VNC sessions..."
+pkill -f "Xvnc :1" 2>/dev/null || true
+pkill -f "fluxbox" 2>/dev/null || true
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+sleep 1
 
-echo "Building BlobeVM Docker image (this may take several minutes on first run)..."
-cd BlobeVM-main
-docker build -t blobevm .
-cd ..
+echo "Setting up VNC password..."
+mkdir -p ~/.vnc
+echo "password" | vncpasswd -f > ~/.vnc/passwd
+chmod 600 ~/.vnc/passwd
 
-echo "Starting BlobeVM on port 3000..."
-docker run --name=BlobeVM \
-  -e PUID=1000 \
-  -e PGID=1000 \
-  --security-opt seccomp=unconfined \
-  -e TZ=Etc/UTC \
-  -e SUBFOLDER=/ \
-  -e TITLE=BlobeVM \
-  -p 5000:3000 \
-  --shm-size="2gb" \
-  blobevm
+echo "Starting Xvnc on display :1..."
+Xvnc :1 \
+  -rfbport 5000 \
+  -rfbauth ~/.vnc/passwd \
+  -geometry 1280x720 \
+  -depth 24 \
+  -SecurityTypes VncAuth \
+  &>/tmp/xvnc.log &
+
+echo "Waiting for Xvnc to be ready..."
+for i in $(seq 1 15); do
+  if xdpyinfo -display :1 &>/dev/null; then
+    echo "Xvnc is ready."
+    break
+  fi
+  sleep 1
+done
+
+echo "Starting fluxbox window manager..."
+DISPLAY=:1 fluxbox &>/tmp/fluxbox.log &
+
+echo "Desktop is running. Connect via VNC on port 5000."
+echo "Password: password"
+
+wait
