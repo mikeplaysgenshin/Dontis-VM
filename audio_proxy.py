@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-TCP-level proxy on port 5000:
-  GET /          -> serves a wrapper page with audio controls + noVNC iframe
-  GET /audio.ogg -> streams PulseAudio via ffmpeg (Ogg/Opus)
-  everything else -> proxied to novnc/websockify on internal port 4998
+Proxy on port 5000:
+  GET  /             -> wrapper HTML page with audio controls
+  GET  /audio-ws     -> WebSocket: streams ffmpeg audio (WebM/Opus) frames
+  GET  /audio.ogg    -> fallback HTTP audio stream (Ogg/Vorbis)
+  *                  -> forwarded to noVNC/websockify on port 4998
 """
 import socket
 import threading
 import subprocess
 import select
+import hashlib
+import base64
+import struct
 import textwrap
 
 LISTEN_PORT = 5000
 NOVNC_PORT  = 4998
+WS_MAGIC    = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
 WRAPPER_HTML = textwrap.dedent("""\
 <!DOCTYPE html>
@@ -28,7 +33,7 @@ WRAPPER_HTML = textwrap.dedent("""\
       display: flex; align-items: center; gap: 12px;
       background: #161b22; border-bottom: 1px solid #30363d;
       padding: 6px 16px; height: 40px; flex-shrink: 0;
-      color: #e6edf3; font-size: 13px;
+      color: #e6edf3; font-size: 13px; user-select: none;
     }
     #audio-bar span { opacity: 0.7; }
     #audio-toggle {
@@ -36,7 +41,7 @@ WRAPPER_HTML = textwrap.dedent("""\
       color: #fff; padding: 5px 14px; cursor: pointer; font-size: 13px;
       transition: background 0.15s;
     }
-    #audio-toggle.muted { background: #6e4040; }
+    #audio-toggle.active { background: #8250df; }
     #audio-toggle:hover { filter: brightness(1.15); }
     #volume-slider { accent-color: #238636; cursor: pointer; width: 90px; }
     #status { font-size: 12px; opacity: 0.5; margin-left: auto; }
@@ -55,43 +60,96 @@ WRAPPER_HTML = textwrap.dedent("""\
     src="/vnc.html?autoconnect=true&password=password&resize=scale"
     allow="fullscreen">
   </iframe>
-  <audio id="vm-audio" src="/audio.ogg" preload="none"></audio>
   <script>
-    var audio = document.getElementById('vm-audio');
+    var ctx = null, gainNode = null, ws = null, ms = null, sb = null;
+    var queue = [], sbBusy = false, audioEl = null;
     var btn   = document.getElementById('audio-toggle');
     var vol   = document.getElementById('volume-slider');
     var stat  = document.getElementById('status');
     var on    = false;
 
+    function appendNext() {
+      if (sbBusy || queue.length === 0 || !sb || sb.updating) return;
+      sbBusy = true;
+      try { sb.appendBuffer(queue.shift()); }
+      catch(e) { sbBusy = false; }
+    }
+
+    function startAudio() {
+      var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      var url   = proto + '://' + location.host + '/audio-ws';
+
+      ms = new MediaSource();
+      audioEl = new Audio();
+      audioEl.src = URL.createObjectURL(ms);
+      audioEl.volume = parseFloat(vol.value);
+
+      ms.addEventListener('sourceopen', function() {
+        try {
+          sb = ms.addSourceBuffer('audio/webm; codecs="opus"');
+        } catch(e) {
+          stat.textContent = 'MSE error: ' + e.message;
+          return;
+        }
+        sb.addEventListener('updateend', function() {
+          sbBusy = false;
+          appendNext();
+          if (audioEl.paused && audioEl.readyState >= 2) {
+            audioEl.play().catch(function(){});
+          }
+        });
+        sb.addEventListener('error', function(e) {
+          sbBusy = false;
+        });
+
+        ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+        ws.onopen = function() { stat.textContent = 'Connected — listening...'; };
+        ws.onmessage = function(e) {
+          queue.push(e.data);
+          appendNext();
+        };
+        ws.onerror = function() { stat.textContent = 'WS error — retrying...'; };
+        ws.onclose = function() {
+          if (on) setTimeout(startAudio, 2000);
+        };
+      });
+
+      audioEl.play().catch(function(){});
+    }
+
+    function stopAudio() {
+      if (ws) { ws.onclose = null; ws.close(); ws = null; }
+      if (audioEl) { audioEl.pause(); audioEl.src = ''; audioEl = null; }
+      ms = null; sb = null; queue = []; sbBusy = false;
+    }
+
     function toggleAudio() {
       if (!on) {
-        audio.volume = parseFloat(vol.value);
-        audio.play().then(function() {
-          on = true;
-          btn.textContent = 'Mute';
-          btn.classList.add('muted');
-          vol.disabled = false;
-          stat.textContent = 'Sound on';
-        }).catch(function(e) {
-          stat.textContent = 'Error: ' + e.message;
-        });
+        on = true;
+        btn.textContent = 'Mute';
+        btn.classList.add('active');
+        vol.disabled = false;
+        stat.textContent = 'Connecting...';
+        startAudio();
       } else {
-        audio.pause();
         on = false;
         btn.textContent = 'Enable Sound';
-        btn.classList.remove('muted');
+        btn.classList.remove('active');
         vol.disabled = true;
         stat.textContent = 'Sound off';
+        stopAudio();
       }
     }
 
     function setVolume(v) {
-      audio.volume = parseFloat(v);
+      if (audioEl) audioEl.volume = parseFloat(v);
     }
   </script>
 </body>
 </html>
 """).encode('utf-8')
+
 
 def _relay(src, dst):
     try:
@@ -116,44 +174,53 @@ def _relay(src, dst):
             except Exception:
                 pass
 
-def _serve_wrapper(sock):
-    resp = (
-        b'HTTP/1.1 200 OK\r\n'
-        b'Content-Type: text/html; charset=utf-8\r\n'
-        b'Cache-Control: no-cache\r\n'
-        b'Connection: close\r\n'
-        b'Content-Length: ' + str(len(WRAPPER_HTML)).encode() + b'\r\n'
-        b'\r\n'
-    ) + WRAPPER_HTML
-    try:
-        sock.sendall(resp)
-    except Exception:
-        pass
-    finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
 
-def _stream_audio(sock):
-    headers = (
-        b'HTTP/1.1 200 OK\r\n'
-        b'Content-Type: audio/ogg\r\n'
-        b'Cache-Control: no-cache\r\n'
-        b'Access-Control-Allow-Origin: *\r\n'
-        b'Connection: close\r\n'
+def _ws_accept_key(key_bytes):
+    digest = hashlib.sha1(key_bytes.strip() + WS_MAGIC).digest()
+    return base64.b64encode(digest).decode()
+
+
+def _ws_send_binary(sock, data):
+    """Send a single binary WebSocket frame."""
+    length = len(data)
+    if length <= 125:
+        header = bytes([0x82, length])
+    elif length <= 65535:
+        header = struct.pack('>BBH', 0x82, 126, length)
+    else:
+        header = struct.pack('>BBQ', 0x82, 127, length)
+    sock.sendall(header + data)
+
+
+def _stream_audio_ws(sock, headers_buf):
+    """Complete WebSocket handshake then pipe WebM/Opus from PulseAudio."""
+    key = b''
+    for line in headers_buf.split(b'\r\n'):
+        if line.lower().startswith(b'sec-websocket-key:'):
+            key = line.split(b':', 1)[1].strip()
+            break
+
+    accept = _ws_accept_key(key)
+    handshake = (
+        b'HTTP/1.1 101 Switching Protocols\r\n'
+        b'Upgrade: websocket\r\n'
+        b'Connection: Upgrade\r\n'
+        b'Sec-WebSocket-Accept: ' + accept.encode() + b'\r\n'
         b'\r\n'
     )
     try:
-        sock.sendall(headers)
+        sock.sendall(handshake)
     except Exception:
         sock.close()
         return
 
     proc = subprocess.Popen(
-        ['ffmpeg', '-f', 'pulse', '-i', 'null.monitor',
-         '-c:a', 'libvorbis', '-b:a', '96k',
-         '-f', 'ogg', '-'],
+        ['ffmpeg',
+         '-f', 'pulse', '-i', 'null.monitor',
+         '-c:a', 'libopus', '-b:a', '96k', '-ar', '48000',
+         '-f', 'webm',
+         '-cluster_time_limit', '500',
+         '-'],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
@@ -162,7 +229,7 @@ def _stream_audio(sock):
             chunk = proc.stdout.read(4096)
             if not chunk:
                 break
-            sock.sendall(chunk)
+            _ws_send_binary(sock, chunk)
     except Exception:
         pass
     finally:
@@ -174,6 +241,69 @@ def _stream_audio(sock):
             sock.close()
         except Exception:
             pass
+
+
+def _stream_audio_http(sock):
+    """Fallback: plain HTTP Ogg/Vorbis stream."""
+    headers = (
+        b'HTTP/1.1 200 OK\r\n'
+        b'Content-Type: audio/ogg\r\n'
+        b'Cache-Control: no-cache\r\n'
+        b'Access-Control-Allow-Origin: *\r\n'
+        b'Transfer-Encoding: chunked\r\n'
+        b'Connection: close\r\n'
+        b'\r\n'
+    )
+    try:
+        sock.sendall(headers)
+    except Exception:
+        sock.close()
+        return
+
+    proc = subprocess.Popen(
+        ['ffmpeg', '-f', 'pulse', '-i', 'null.monitor',
+         '-c:a', 'libvorbis', '-b:a', '96k', '-f', 'ogg', '-'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        while True:
+            chunk = proc.stdout.read(4096)
+            if not chunk:
+                break
+            sock.sendall(('%x\r\n' % len(chunk)).encode() + chunk + b'\r\n')
+    except Exception:
+        pass
+    finally:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _serve_html(sock, body):
+    resp = (
+        b'HTTP/1.1 200 OK\r\n'
+        b'Content-Type: text/html; charset=utf-8\r\n'
+        b'Cache-Control: no-cache\r\n'
+        b'Connection: close\r\n'
+        b'Content-Length: ' + str(len(body)).encode() + b'\r\n'
+        b'\r\n'
+    ) + body
+    try:
+        sock.sendall(resp)
+    except Exception:
+        pass
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
 
 def _handle(client):
     buf = b''
@@ -188,15 +318,18 @@ def _handle(client):
         client.close()
         return
 
-    first = buf.split(b'\r\n')[0].decode('utf-8', errors='replace')
-    parts = first.split(' ')
-    path  = parts[1].split('?')[0] if len(parts) >= 2 else '/'
+    first_line = buf.split(b'\r\n')[0].decode('utf-8', errors='replace')
+    parts  = first_line.split(' ')
+    path   = parts[1].split('?')[0] if len(parts) >= 2 else '/'
     method = parts[0] if parts else 'GET'
+    is_ws  = b'Upgrade: websocket' in buf or b'upgrade: websocket' in buf
 
     if method == 'GET' and path in ('/', '/index.html'):
-        threading.Thread(target=_serve_wrapper, args=(client,), daemon=True).start()
+        threading.Thread(target=_serve_html, args=(client, WRAPPER_HTML), daemon=True).start()
+    elif path == '/audio-ws' and is_ws:
+        threading.Thread(target=_stream_audio_ws, args=(client, buf), daemon=True).start()
     elif path in ('/audio', '/audio.ogg'):
-        threading.Thread(target=_stream_audio, args=(client,), daemon=True).start()
+        threading.Thread(target=_stream_audio_http, args=(client,), daemon=True).start()
     else:
         try:
             backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -209,15 +342,17 @@ def _handle(client):
             except Exception:
                 pass
 
+
 def main():
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(('0.0.0.0', LISTEN_PORT))
     srv.listen(128)
-    print(f'Audio proxy listening on port {LISTEN_PORT}, forwarding other traffic to novnc on {NOVNC_PORT}', flush=True)
+    print(f'Audio proxy on :{LISTEN_PORT} | noVNC on :{NOVNC_PORT}', flush=True)
     while True:
         client, _ = srv.accept()
         threading.Thread(target=_handle, args=(client,), daemon=True).start()
+
 
 if __name__ == '__main__':
     main()

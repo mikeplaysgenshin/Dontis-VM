@@ -102,12 +102,14 @@ sleep 2
 
 echo "Launching Chromium browser..."
 export CHROME_DEVEL_SANDBOX=/nix/store/c5mij30612sfy40hl94yr5vcrhw17nwb-chromium-138.0.7204.100-sandbox/bin/__chromium-suid-sandbox
+export PULSE_SERVER=/var/run/pulse/native
 $CHROMIUM_BIN \
   --no-sandbox \
   --disable-dev-shm-usage \
   --disable-setuid-sandbox \
   --no-first-run \
   --disable-background-networking \
+  --alsa-output-device=pulse \
   "https://www.google.com" \
   &>/tmp/chromium.log &
 sleep 2
