@@ -151,8 +151,8 @@ def _stream_audio(sock):
         return
 
     proc = subprocess.Popen(
-        ['ffmpeg', '-f', 'pulse', '-i', 'virtual_speaker.monitor',
-         '-c:a', 'libopus', '-b:a', '64k', '-ar', '44100',
+        ['ffmpeg', '-f', 'pulse', '-i', 'null.monitor',
+         '-c:a', 'libvorbis', '-b:a', '96k',
          '-f', 'ogg', '-'],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

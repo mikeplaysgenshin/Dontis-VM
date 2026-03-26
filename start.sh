@@ -37,9 +37,9 @@ PULSE_EOF
 $PULSEAUDIO --start --log-target=file:/tmp/pulse.log --exit-idle-time=-1 2>/dev/null || true
 sleep 2
 
-# Create a null output sink named virtual_speaker so ffmpeg can capture it
-$PACTL load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description=virtual_speaker 2>/dev/null || true
-$PACTL set-default-sink virtual_speaker 2>/dev/null || true
+# Ensure a null output sink exists (named 'null') so ffmpeg can capture from null.monitor
+$PACTL load-module module-null-sink 2>/dev/null || true
+$PACTL set-default-sink null 2>/dev/null || true
 
 echo "Setting up custom noVNC web directory..."
 mkdir -p /tmp/novnc-web
