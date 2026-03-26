@@ -82,6 +82,9 @@ echo "Launching Chromium browser..."
 export CHROME_DEVEL_SANDBOX=/nix/store/c5mij30612sfy40hl94yr5vcrhw17nwb-chromium-138.0.7204.100-sandbox/bin/__chromium-suid-sandbox
 # Tell Chromium explicitly where PulseAudio is so it routes audio through the null sink
 export PULSE_SERVER=/var/run/pulse/native
+# Remove stale Chromium lock files (profile dir and temp socket dir) to prevent startup failures
+rm -f ~/.config/chromium/SingletonLock ~/.config/chromium/SingletonCookie ~/.config/chromium/SingletonSocket 2>/dev/null || true
+rm -rf /tmp/.org.chromium.Chromium.* 2>/dev/null || true
 $CHROMIUM_BIN \
   --no-sandbox \
   --disable-dev-shm-usage \
