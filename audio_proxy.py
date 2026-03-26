@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Proxy on port 5000:
-  GET  /             -> wrapper HTML page with audio controls
-  GET  /audio-ws     -> WebSocket: streams ffmpeg audio (WebM/Opus) frames
-  GET  /audio.ogg    -> fallback HTTP audio stream (Ogg/Vorbis)
+  GET  /             -> wrapper HTML page with audio controls (Web Audio API)
+  GET  /audio-ws     -> WebSocket: raw PCM s16le stereo 44100Hz frames
+  GET  /audio.ogg    -> fallback HTTP Ogg/Vorbis stream
   *                  -> forwarded to noVNC/websockify on port 4998
 """
 import socket
@@ -61,89 +61,93 @@ WRAPPER_HTML = textwrap.dedent("""\
     allow="fullscreen">
   </iframe>
   <script>
-    var ctx = null, gainNode = null, ws = null, ms = null, sb = null;
-    var queue = [], sbBusy = false, audioEl = null;
-    var btn   = document.getElementById('audio-toggle');
-    var vol   = document.getElementById('volume-slider');
-    var stat  = document.getElementById('status');
-    var on    = false;
+    // Raw PCM Web Audio API player
+    // Server sends s16le stereo 44100Hz binary frames over WebSocket
+    var RATE = 44100, CH = 2, BPS = 2;
+    var audioCtx = null, gainNode = null, ws = null;
+    var nextTime = 0, on = false;
 
-    function appendNext() {
-      if (sbBusy || queue.length === 0 || !sb || sb.updating) return;
-      sbBusy = true;
-      try { sb.appendBuffer(queue.shift()); }
-      catch(e) { sbBusy = false; }
-    }
+    var btn  = document.getElementById('audio-toggle');
+    var vol  = document.getElementById('volume-slider');
+    var stat = document.getElementById('status');
 
     function startAudio() {
+      audioCtx  = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: RATE });
+      gainNode  = audioCtx.createGain();
+      gainNode.gain.value = parseFloat(vol.value);
+      gainNode.connect(audioCtx.destination);
+      nextTime  = audioCtx.currentTime + 0.1;
+
       var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      var url   = proto + '://' + location.host + '/audio-ws';
+      ws = new WebSocket(proto + '://' + location.host + '/audio-ws');
+      ws.binaryType = 'arraybuffer';
 
-      ms = new MediaSource();
-      audioEl = new Audio();
-      audioEl.src = URL.createObjectURL(ms);
-      audioEl.volume = parseFloat(vol.value);
+      ws.onopen = function() {
+        stat.textContent = 'Connected — listening...';
+      };
 
-      ms.addEventListener('sourceopen', function() {
-        try {
-          sb = ms.addSourceBuffer('audio/webm; codecs="opus"');
-        } catch(e) {
-          stat.textContent = 'MSE error: ' + e.message;
-          return;
+      ws.onmessage = function(e) {
+        var raw    = new Int16Array(e.data);
+        var frames = Math.floor(raw.length / CH);
+        if (frames === 0) return;
+
+        var buf  = audioCtx.createBuffer(CH, frames, RATE);
+        var ch0  = buf.getChannelData(0);
+        var ch1  = buf.getChannelData(1);
+        for (var i = 0; i < frames; i++) {
+          ch0[i] = raw[i * 2]     / 32768.0;
+          ch1[i] = raw[i * 2 + 1] / 32768.0;
         }
-        sb.addEventListener('updateend', function() {
-          sbBusy = false;
-          appendNext();
-          if (audioEl.paused && audioEl.readyState >= 2) {
-            audioEl.play().catch(function(){});
-          }
-        });
-        sb.addEventListener('error', function(e) {
-          sbBusy = false;
-        });
 
-        ws = new WebSocket(url);
-        ws.binaryType = 'arraybuffer';
-        ws.onopen = function() { stat.textContent = 'Connected — listening...'; };
-        ws.onmessage = function(e) {
-          queue.push(e.data);
-          appendNext();
-        };
-        ws.onerror = function() { stat.textContent = 'WS error — retrying...'; };
-        ws.onclose = function() {
-          if (on) setTimeout(startAudio, 2000);
-        };
-      });
+        var src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(gainNode);
 
-      audioEl.play().catch(function(){});
+        var now = audioCtx.currentTime;
+        // Keep a 80ms lookahead buffer; if we're behind, catch up
+        if (nextTime < now + 0.04) nextTime = now + 0.08;
+        src.start(nextTime);
+        nextTime += frames / RATE;
+      };
+
+      ws.onerror = function() {
+        stat.textContent = 'Connection error — retrying...';
+      };
+
+      ws.onclose = function() {
+        if (on) {
+          stat.textContent = 'Reconnecting...';
+          setTimeout(startAudio, 2000);
+        }
+      };
     }
 
     function stopAudio() {
       if (ws) { ws.onclose = null; ws.close(); ws = null; }
-      if (audioEl) { audioEl.pause(); audioEl.src = ''; audioEl = null; }
-      ms = null; sb = null; queue = []; sbBusy = false;
+      if (audioCtx) { audioCtx.close(); audioCtx = null; }
+      gainNode = null; nextTime = 0;
     }
 
     function toggleAudio() {
       if (!on) {
         on = true;
-        btn.textContent = 'Mute';
+        btn.textContent  = 'Mute';
         btn.classList.add('active');
-        vol.disabled = false;
+        vol.disabled     = false;
         stat.textContent = 'Connecting...';
         startAudio();
       } else {
         on = false;
-        btn.textContent = 'Enable Sound';
+        btn.textContent  = 'Enable Sound';
         btn.classList.remove('active');
-        vol.disabled = true;
+        vol.disabled     = true;
         stat.textContent = 'Sound off';
         stopAudio();
       }
     }
 
     function setVolume(v) {
-      if (audioEl) audioEl.volume = parseFloat(v);
+      if (gainNode) gainNode.gain.value = parseFloat(v);
     }
   </script>
 </body>
@@ -181,7 +185,6 @@ def _ws_accept_key(key_bytes):
 
 
 def _ws_send_binary(sock, data):
-    """Send a single binary WebSocket frame."""
     length = len(data)
     if length <= 125:
         header = bytes([0x82, length])
@@ -192,8 +195,8 @@ def _ws_send_binary(sock, data):
     sock.sendall(header + data)
 
 
-def _stream_audio_ws(sock, headers_buf):
-    """Complete WebSocket handshake then pipe WebM/Opus from PulseAudio."""
+def _stream_pcm_ws(sock, headers_buf):
+    """WebSocket handler: stream raw s16le stereo 44100Hz PCM from PulseAudio."""
     key = b''
     for line in headers_buf.split(b'\r\n'):
         if line.lower().startswith(b'sec-websocket-key:'):
@@ -217,13 +220,12 @@ def _stream_audio_ws(sock, headers_buf):
     proc = subprocess.Popen(
         ['ffmpeg',
          '-f', 'pulse', '-i', 'null.monitor',
-         '-c:a', 'libopus', '-b:a', '96k', '-ar', '48000',
-         '-f', 'webm',
-         '-cluster_time_limit', '500',
+         '-f', 's16le', '-ar', '44100', '-ac', '2',
          '-'],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
+    # Send ~46ms chunks (4096 bytes = 1024 stereo frames at 44100Hz)
     try:
         while True:
             chunk = proc.stdout.read(4096)
@@ -322,12 +324,12 @@ def _handle(client):
     parts  = first_line.split(' ')
     path   = parts[1].split('?')[0] if len(parts) >= 2 else '/'
     method = parts[0] if parts else 'GET'
-    is_ws  = b'Upgrade: websocket' in buf or b'upgrade: websocket' in buf
+    is_ws  = (b'Upgrade: websocket' in buf or b'upgrade: websocket' in buf)
 
     if method == 'GET' and path in ('/', '/index.html'):
         threading.Thread(target=_serve_html, args=(client, WRAPPER_HTML), daemon=True).start()
     elif path == '/audio-ws' and is_ws:
-        threading.Thread(target=_stream_audio_ws, args=(client, buf), daemon=True).start()
+        threading.Thread(target=_stream_pcm_ws, args=(client, buf), daemon=True).start()
     elif path in ('/audio', '/audio.ogg'):
         threading.Thread(target=_stream_audio_http, args=(client,), daemon=True).start()
     else:
