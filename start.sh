@@ -16,13 +16,15 @@ export DISPLAY=:${DISPLAY_NUM}
 
 echo "Cleaning up any previous sessions..."
 pkill -f "Xvnc :${DISPLAY_NUM}" 2>/dev/null || true
-pkill -f "novnc" 2>/dev/null || true
+# websockify forks children per connection; SIGKILL reaches all of them
+kill -9 $(pgrep -f "websockify" 2>/dev/null) 2>/dev/null || true
+pkill -9 -f "novnc" 2>/dev/null || true
 pkill -f "fluxbox" 2>/dev/null || true
-pkill -f "chromium" 2>/dev/null || true
+pkill -9 -f "chromium" 2>/dev/null || true
 pkill -f "pulseaudio" 2>/dev/null || true
-pkill -f "audio_proxy.py" 2>/dev/null || true
+pkill -9 -f "audio_proxy.py" 2>/dev/null || true
+sleep 2
 rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM} 2>/dev/null || true
-sleep 1
 
 echo "Setting up PulseAudio..."
 mkdir -p ~/.config/pulse
