@@ -30,6 +30,9 @@ cat > ~/.config/pulse/daemon.conf <<'PULSE_EOF'
 default-sample-rate = 44100
 default-sample-channels = 2
 default-sample-format = s16le
+# Reduce PulseAudio's internal buffer to cut latency from ~100ms to ~10ms
+default-fragments = 2
+default-fragment-size-msec = 5
 PULSE_EOF
 
 $PULSEAUDIO --start --log-target=file:/tmp/pulse.log --exit-idle-time=-1 2>/dev/null || true

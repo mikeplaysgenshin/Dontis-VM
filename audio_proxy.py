@@ -104,8 +104,8 @@ WRAPPER_HTML = textwrap.dedent("""\
         src.connect(gainNode);
 
         var now = audioCtx.currentTime;
-        // Keep a 80ms lookahead buffer; if we're behind, catch up
-        if (nextTime < now + 0.04) nextTime = now + 0.08;
+        // 30ms lookahead — enough to avoid glitches, small enough to feel live
+        if (nextTime < now + 0.015) nextTime = now + 0.03;
         src.start(nextTime);
         nextTime += frames / RATE;
       };
@@ -219,13 +219,19 @@ def _stream_pcm_ws(sock, headers_buf):
 
     proc = subprocess.Popen(
         ['ffmpeg',
-         '-f', 'pulse', '-i', 'null.monitor',
+         # Reduce ffmpeg's own input/output buffering
+         '-fflags', 'nobuffer',
+         '-flags', 'low_delay',
+         # PulseAudio source — fragment_size limits how much PA buffers per read
+         '-f', 'pulse', '-fragment_size', '2048', '-i', 'null.monitor',
          '-f', 's16le', '-ar', '44100', '-ac', '2',
+         # Flush output every frame (no mux delay)
+         '-flush_packets', '1',
          '-'],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
-    # Send ~46ms chunks (4096 bytes = 1024 stereo frames at 44100Hz)
+    # ~23ms chunks (4096 bytes = 1024 stereo frames at 44100Hz)
     try:
         while True:
             chunk = proc.stdout.read(4096)
