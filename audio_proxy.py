@@ -198,7 +198,7 @@ WRAPPER_HTML = textwrap.dedent("""\
     }
 
     function promptPaste() {
-      var text = prompt('Your browser blocked clipboard access.\nPaste your text here and click OK:');
+      var text = prompt('Your browser blocked clipboard access.\\nPaste your text here and click OK:');
       if (text != null) sendPaste(text);
     }
 
