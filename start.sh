@@ -107,57 +107,80 @@ session.screen0.tab.placement:                  TopLeft
 session.screen0.tab.width:                      64
 session.menuFile:                               ~/.fluxbox/menu
 FLUX_EOF
-# Simple right-click menu
-cat > ~/.fluxbox/menu <<'MENU_EOF'
-[begin] (BlobeVM)
-  [exec] (Terminal) {xterm -fa Monospace -fs 12 -bg "#0d1117" -fg "#e6edf3"}
-  [separator]
-  [submenu] (Window Manager)
-    [restart] (Restart Fluxbox)
-    [reconfig] (Reload Config)
-  [end]
-[end]
-MENU_EOF
 
-echo "Starting Fluxbox window manager..."
-fluxbox -rc ~/.fluxbox/init -log /tmp/fluxbox.log &>/tmp/fluxbox-stderr.log &
-sleep 2
-
-echo "Launching Chromium browser (with isolated profile)..."
 export CHROME_DEVEL_SANDBOX=/nix/store/c5mij30612sfy40hl94yr5vcrhw17nwb-chromium-138.0.7204.100-sandbox/bin/__chromium-suid-sandbox
 # Route audio through PulseAudio
 export PULSE_SERVER=/var/run/pulse/native
 # Use a dedicated user-data-dir so we never collide with Replit's screenshot Chromium
 CHROMIUM_PROFILE=/tmp/blobevm-chrome
 mkdir -p "$CHROMIUM_PROFILE"
-rm -f "$CHROMIUM_PROFILE/SingletonLock" "$CHROMIUM_PROFILE/SingletonCookie" "$CHROMIUM_PROFILE/SingletonSocket" 2>/dev/null || true
 
-# Auto-restart loop: if Chromium dies, bring it back. The 'blobevm-chrome' tag
-# in the user-data-dir lets us spot it in process lists.
-(
-  while true; do
-    $CHROMIUM_BIN \
-      --no-sandbox \
-      --disable-dev-shm-usage \
-      --disable-setuid-sandbox \
-      --disable-gpu \
-      --no-first-run \
-      --no-default-browser-check \
-      --disable-background-networking \
-      --disable-features=Translate,MediaRouter \
-      --user-data-dir="$CHROMIUM_PROFILE" \
-      --window-position=0,0 \
-      --window-size=1280,680 \
-      "https://www.google.com" \
-      &>/dev/null
-    echo "[$(date '+%H:%M:%S')] Chromium exited, restarting in 2s..." >>/tmp/chromium.log
-    sleep 2
-  done
-) &
+# Launcher scripts: same command used at startup and from the right-click menu / keys
+cat > /tmp/blobevm-launch-chromium.sh <<EOF
+#!/bin/bash
+export DISPLAY=:${DISPLAY_NUM}
+export PULSE_SERVER=/var/run/pulse/native
+export CHROME_DEVEL_SANDBOX="$CHROME_DEVEL_SANDBOX"
+# Clear singleton locks in case a previous Chromium left them behind
+rm -f "$CHROMIUM_PROFILE/SingletonLock" "$CHROMIUM_PROFILE/SingletonCookie" "$CHROMIUM_PROFILE/SingletonSocket" 2>/dev/null
+exec "$CHROMIUM_BIN" \\
+  --no-sandbox \\
+  --disable-dev-shm-usage \\
+  --disable-setuid-sandbox \\
+  --disable-gpu \\
+  --no-first-run \\
+  --no-default-browser-check \\
+  --disable-background-networking \\
+  --disable-features=Translate,MediaRouter \\
+  --user-data-dir="$CHROMIUM_PROFILE" \\
+  --window-position=0,0 \\
+  --window-size=1280,680 \\
+  "https://www.google.com" >/dev/null 2>&1
+EOF
+chmod +x /tmp/blobevm-launch-chromium.sh
+
+cat > /tmp/blobevm-launch-terminal.sh <<EOF
+#!/bin/bash
+export DISPLAY=:${DISPLAY_NUM}
+exec "$XTERM" -fa Monospace -fs 12 -title Terminal \\
+  -bg '#0d1117' -fg '#e6edf3' -geometry 100x20+50+400 -hold -e bash
+EOF
+chmod +x /tmp/blobevm-launch-terminal.sh
+
+# Right-click menu
+cat > ~/.fluxbox/menu <<'MENU_EOF'
+[begin] (BlobeVM)
+  [exec] (Chromium Browser)  {/tmp/blobevm-launch-chromium.sh}
+  [exec] (Terminal)          {/tmp/blobevm-launch-terminal.sh}
+  [separator]
+  [submenu] (Window Manager)
+    [restart] (Restart Fluxbox)
+    [reconfig] (Reload Config)
+  [end]
+  [separator]
+  [exit] (Log Out)
+[end]
+MENU_EOF
+
+# Keyboard shortcuts: Alt+B = Browser, Alt+T = Terminal, Alt+F2 = command launcher
+cat > ~/.fluxbox/keys <<'KEYS_EOF'
+Mod1 b :Exec /tmp/blobevm-launch-chromium.sh
+Mod1 t :Exec /tmp/blobevm-launch-terminal.sh
+Mod1 Tab :NextWindow
+Mod1 Shift Tab :PrevWindow
+Mod1 F4 :Close
+KEYS_EOF
+
+echo "Starting Fluxbox window manager..."
+fluxbox -rc ~/.fluxbox/init -log /tmp/fluxbox.log &>/tmp/fluxbox-stderr.log &
+sleep 2
+
+echo "Launching Chromium browser..."
+/tmp/blobevm-launch-chromium.sh &
 sleep 3
 
 echo "Launching terminal..."
-($XTERM -fa 'Monospace' -fs 12 -title 'Terminal' -bg '#0d1117' -fg '#e6edf3' -geometry 100x20+50+400 -hold -e bash || true) &
+/tmp/blobevm-launch-terminal.sh &
 sleep 1
 
 echo "Starting noVNC on internal port ${NOVNC_INTERNAL_PORT}..."
