@@ -58,6 +58,8 @@ WRAPPER_HTML = textwrap.dedent("""\
     <button id="audio-toggle" class="bar-btn" onclick="toggleAudio()">Enable Sound</button>
     <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="0.8"
            oninput="setVolume(this.value)" title="Volume" disabled>
+    <button id="test-tone-btn" class="bar-btn secondary" onclick="playTestTone()"
+            title="Play a 2-second beep inside the VM so you can verify sound is reaching your speakers">Test Tone</button>
     <span style="opacity:0.3;">|</span>
     <span>&#128203; Clipboard</span>
     <button id="paste-btn" class="bar-btn secondary" onclick="pasteToVM()"
@@ -79,9 +81,13 @@ WRAPPER_HTML = textwrap.dedent("""\
     var btn  = document.getElementById('audio-toggle');
     var vol  = document.getElementById('volume-slider');
     var stat = document.getElementById('status');
+    var bytesIn = 0, rateTimer = null;
 
     function startAudio() {
       audioCtx  = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: RATE });
+      // Chrome's autoplay policy keeps the context suspended until a user gesture;
+      // calling resume() here (we're inside the click handler) guarantees playback.
+      if (audioCtx.state === 'suspended') audioCtx.resume();
       gainNode  = audioCtx.createGain();
       gainNode.gain.value = parseFloat(vol.value);
       gainNode.connect(audioCtx.destination);
@@ -92,10 +98,20 @@ WRAPPER_HTML = textwrap.dedent("""\
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = function() {
-        stat.textContent = 'Connected — listening...';
+        stat.textContent = 'Connected — waiting for audio...';
+        bytesIn = 0;
+        if (rateTimer) clearInterval(rateTimer);
+        rateTimer = setInterval(function() {
+          var kbps = (bytesIn / 1024).toFixed(0);
+          stat.textContent = bytesIn > 0
+            ? 'Streaming ' + kbps + ' KB/s'
+            : 'Connected — VM is silent';
+          bytesIn = 0;
+        }, 1000);
       };
 
       ws.onmessage = function(e) {
+        bytesIn += e.data.byteLength;
         var raw    = new Int16Array(e.data);
         var frames = Math.floor(raw.length / CH);
         if (frames === 0) return;
@@ -132,9 +148,23 @@ WRAPPER_HTML = textwrap.dedent("""\
     }
 
     function stopAudio() {
+      if (rateTimer) { clearInterval(rateTimer); rateTimer = null; }
       if (ws) { ws.onclose = null; ws.close(); ws = null; }
       if (audioCtx) { audioCtx.close(); audioCtx = null; }
       gainNode = null; nextTime = 0;
+    }
+
+    function playTestTone() {
+      var b = document.getElementById('test-tone-btn');
+      b.disabled = true;
+      var orig = b.textContent;
+      b.textContent = 'Playing...';
+      fetch('/test-tone', { method: 'POST' })
+        .then(function(r) { b.textContent = r.ok ? 'Sent!' : 'Failed'; })
+        .catch(function() { b.textContent = 'Error'; })
+        .finally(function() {
+          setTimeout(function() { b.textContent = orig; b.disabled = false; }, 2500);
+        });
     }
 
     function toggleAudio() {
@@ -436,6 +466,38 @@ def _handle_paste(client, headers_buf):
             pass
 
 
+def _handle_test_tone(client):
+    """POST /test-tone: pipe a 2-second 440Hz sine into the default PulseAudio sink."""
+    try:
+        env = dict(os.environ, PULSE_SERVER='/var/run/pulse/native')
+        # Run detached so the request returns immediately; ffmpeg writes into the
+        # null sink, which is exactly the same path Chromium audio takes.
+        subprocess.Popen(
+            ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+             '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+             '-f', 'pulse', 'default'],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+        resp = (b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n'
+                b'Content-Length: 2\r\nConnection: close\r\n\r\nOK')
+        client.sendall(resp)
+    except Exception as e:
+        try:
+            msg = f'test-tone failed: {e}'.encode()
+            resp = (b'HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n'
+                    b'Content-Length: ' + str(len(msg)).encode() +
+                    b'\r\nConnection: close\r\n\r\n') + msg
+            client.sendall(resp)
+        except Exception:
+            pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def _handle(client):
     buf = b''
     try:
@@ -482,6 +544,8 @@ def _handle(client):
         threading.Thread(target=_stream_audio_http, args=(client,), daemon=True).start()
     elif method == 'POST' and path == '/paste':
         threading.Thread(target=_handle_paste, args=(client, buf), daemon=True).start()
+    elif method == 'POST' and path == '/test-tone':
+        threading.Thread(target=_handle_test_tone, args=(client,), daemon=True).start()
     else:
         try:
             backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
