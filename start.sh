@@ -142,8 +142,20 @@ chmod +x /tmp/blobevm-launch-chromium.sh
 cat > /tmp/blobevm-launch-terminal.sh <<EOF
 #!/bin/bash
 export DISPLAY=:${DISPLAY_NUM}
+# Paste support:
+#   Ctrl+V          -> paste from CLIPBOARD (what noVNC syncs from your host)
+#   Shift+Insert    -> paste from PRIMARY (xterm default, kept)
+#   Ctrl+Shift+C    -> copy selection to CLIPBOARD (so it syncs back to host)
+# selectToClipboard=true: highlighting text in xterm auto-copies to CLIPBOARD
 exec "$XTERM" -fa Monospace -fs 12 -title Terminal \\
-  -bg '#0d1117' -fg '#e6edf3' -geometry 100x20+50+400 -hold -e bash
+  -bg '#0d1117' -fg '#e6edf3' -geometry 100x20+50+400 \\
+  -xrm 'XTerm*selectToClipboard: true' \\
+  -xrm 'XTerm.vt100.translations: #override \\
+      Ctrl <Key> V: insert-selection(CLIPBOARD) \\n\\
+      Ctrl Shift <Key> V: insert-selection(CLIPBOARD) \\n\\
+      Ctrl Shift <Key> C: copy-selection(CLIPBOARD) \\n\\
+      Shift <Key> Insert: insert-selection(PRIMARY)' \\
+  -hold -e bash
 EOF
 chmod +x /tmp/blobevm-launch-terminal.sh
 
