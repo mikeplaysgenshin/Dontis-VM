@@ -79,32 +79,85 @@ fc-cache -f ~/.fonts/ 2>/dev/null || true
 echo "Setting desktop background..."
 $XSETROOT -solid '#1a3a5c'
 
+echo "Configuring Fluxbox (with visible taskbar)..."
+mkdir -p ~/.fluxbox
+cat > ~/.fluxbox/init <<'FLUX_EOF'
+session.screen0.toolbar.visible:                true
+session.screen0.toolbar.autoHide:               false
+session.screen0.toolbar.placement:              BottomCenter
+session.screen0.toolbar.widthPercent:           100
+session.screen0.toolbar.height:                 28
+session.screen0.toolbar.alpha:                  230
+session.screen0.toolbar.tools:                  prevworkspace, workspacename, nextworkspace, iconbar, systemtray, clock
+session.screen0.toolbar.onhead:                 1
+session.screen0.iconbar.mode:                   {static groups} (workspace)
+session.screen0.iconbar.iconTextPadding:        10
+session.screen0.iconbar.alignment:              Relative
+session.screen0.iconbar.usePixmap:              true
+session.screen0.workspaces:                     1
+session.screen0.workspaceNames:                 BlobeVM,
+session.screen0.clockFormat:                    %H:%M
+session.screen0.fullMaximization:               false
+session.screen0.focusModel:                     ClickFocus
+session.screen0.windowMenu:
+session.screen0.defaultDeco:                    NORMAL
+session.screen0.allowRemoteActions:             false
+session.screen0.tabs.usePixmap:                 true
+session.screen0.tab.placement:                  TopLeft
+session.screen0.tab.width:                      64
+session.menuFile:                               ~/.fluxbox/menu
+FLUX_EOF
+# Simple right-click menu
+cat > ~/.fluxbox/menu <<'MENU_EOF'
+[begin] (BlobeVM)
+  [exec] (Terminal) {xterm -fa Monospace -fs 12 -bg "#0d1117" -fg "#e6edf3"}
+  [separator]
+  [submenu] (Window Manager)
+    [restart] (Restart Fluxbox)
+    [reconfig] (Reload Config)
+  [end]
+[end]
+MENU_EOF
+
 echo "Starting Fluxbox window manager..."
-fluxbox &>/tmp/fluxbox.log &
+fluxbox -rc ~/.fluxbox/init -log /tmp/fluxbox.log &>/tmp/fluxbox-stderr.log &
 sleep 2
 
-echo "Launching Chromium browser..."
+echo "Launching Chromium browser (with isolated profile)..."
 export CHROME_DEVEL_SANDBOX=/nix/store/c5mij30612sfy40hl94yr5vcrhw17nwb-chromium-138.0.7204.100-sandbox/bin/__chromium-suid-sandbox
-# Tell Chromium explicitly where PulseAudio is so it routes audio through the null sink
+# Route audio through PulseAudio
 export PULSE_SERVER=/var/run/pulse/native
-# Remove stale Chromium lock files to prevent "profile in use" startup failures.
-# Chromium resolves its user-data-dir relative to the working directory, so the locks
-# end up in workspace/.config/chromium/, not $HOME/.config/chromium/.
-rm -f .config/chromium/SingletonLock .config/chromium/SingletonCookie .config/chromium/SingletonSocket 2>/dev/null || true
-rm -f ~/.config/chromium/SingletonLock ~/.config/chromium/SingletonCookie ~/.config/chromium/SingletonSocket 2>/dev/null || true
-rm -rf /tmp/.org.chromium.Chromium.* 2>/dev/null || true
-$CHROMIUM_BIN \
-  --no-sandbox \
-  --disable-dev-shm-usage \
-  --disable-setuid-sandbox \
-  --no-first-run \
-  --disable-background-networking \
-  "https://www.google.com" \
-  &>/tmp/chromium.log &
-sleep 2
+# Use a dedicated user-data-dir so we never collide with Replit's screenshot Chromium
+CHROMIUM_PROFILE=/tmp/blobevm-chrome
+mkdir -p "$CHROMIUM_PROFILE"
+rm -f "$CHROMIUM_PROFILE/SingletonLock" "$CHROMIUM_PROFILE/SingletonCookie" "$CHROMIUM_PROFILE/SingletonSocket" 2>/dev/null || true
+
+# Auto-restart loop: if Chromium dies, bring it back. The 'blobevm-chrome' tag
+# in the user-data-dir lets us spot it in process lists.
+(
+  while true; do
+    $CHROMIUM_BIN \
+      --no-sandbox \
+      --disable-dev-shm-usage \
+      --disable-setuid-sandbox \
+      --disable-gpu \
+      --no-first-run \
+      --no-default-browser-check \
+      --disable-background-networking \
+      --disable-features=Translate,MediaRouter \
+      --user-data-dir="$CHROMIUM_PROFILE" \
+      --window-position=0,0 \
+      --window-size=1280,680 \
+      "https://www.google.com" \
+      &>/dev/null
+    echo "[$(date '+%H:%M:%S')] Chromium exited, restarting in 2s..." >>/tmp/chromium.log
+    sleep 2
+  done
+) &
+sleep 3
 
 echo "Launching terminal..."
-$XTERM -fa 'Monospace' -fs 12 -title 'Terminal' -bg '#0d1117' -fg '#e6edf3' -geometry 100x20+50+400 &
+($XTERM -fa 'Monospace' -fs 12 -title 'Terminal' -bg '#0d1117' -fg '#e6edf3' -geometry 100x20+50+400 -hold -e bash || true) &
 sleep 1
 
 echo "Starting noVNC on internal port ${NOVNC_INTERNAL_PORT}..."
