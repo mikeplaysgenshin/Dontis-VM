@@ -4,8 +4,10 @@ Proxy on port 5000:
   GET  /             -> wrapper HTML page with audio controls (Web Audio API)
   GET  /audio-ws     -> WebSocket: raw PCM s16le stereo 44100Hz frames
   GET  /audio.ogg    -> fallback HTTP Ogg/Vorbis stream
+  POST /paste        -> body text -> X11 CLIPBOARD + Ctrl+V into focused window
   *                  -> forwarded to noVNC/websockify on port 4998
 """
+import os
 import socket
 import threading
 import subprocess
@@ -36,24 +38,31 @@ WRAPPER_HTML = textwrap.dedent("""\
       color: #e6edf3; font-size: 13px; user-select: none;
     }
     #audio-bar span { opacity: 0.7; }
-    #audio-toggle {
+    .bar-btn {
       background: #238636; border: none; border-radius: 6px;
       color: #fff; padding: 5px 14px; cursor: pointer; font-size: 13px;
       transition: background 0.15s;
     }
     #audio-toggle.active { background: #8250df; }
-    #audio-toggle:hover { filter: brightness(1.15); }
+    .bar-btn:hover { filter: brightness(1.15); }
+    .bar-btn.secondary { background: #30363d; }
     #volume-slider { accent-color: #238636; cursor: pointer; width: 90px; }
     #status { font-size: 12px; opacity: 0.5; margin-left: auto; }
+    #paste-status { font-size: 11px; opacity: 0.6; min-width: 80px; }
     #vnc-frame { flex: 1; border: none; width: 100%; }
   </style>
 </head>
 <body>
   <div id="audio-bar">
     <span>&#128266; VM Audio</span>
-    <button id="audio-toggle" onclick="toggleAudio()">Enable Sound</button>
+    <button id="audio-toggle" class="bar-btn" onclick="toggleAudio()">Enable Sound</button>
     <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="0.8"
            oninput="setVolume(this.value)" title="Volume" disabled>
+    <span style="opacity:0.3;">|</span>
+    <span>&#128203; Clipboard</span>
+    <button id="paste-btn" class="bar-btn secondary" onclick="pasteToVM()"
+            title="Paste your computer's clipboard into the focused VM window">Paste from Clipboard</button>
+    <span id="paste-status"></span>
     <span id="status">Sound off</span>
   </div>
   <iframe id="vnc-frame"
@@ -149,6 +158,57 @@ WRAPPER_HTML = textwrap.dedent("""\
     function setVolume(v) {
       if (gainNode) gainNode.gain.value = parseFloat(v);
     }
+
+    var pasteStat = document.getElementById('paste-status');
+    var pasteBtn  = document.getElementById('paste-btn');
+
+    function flashPaste(msg, color) {
+      pasteStat.textContent = msg;
+      pasteStat.style.color = color || '';
+      setTimeout(function() {
+        if (pasteStat.textContent === msg) pasteStat.textContent = '';
+      }, 2500);
+    }
+
+    function sendPaste(text) {
+      if (!text) { flashPaste('Clipboard empty', '#f85149'); return; }
+      pasteBtn.disabled = true;
+      pasteStat.textContent = 'Sending ' + text.length + ' chars...';
+      fetch('/paste', { method: 'POST', body: text, headers: { 'Content-Type': 'text/plain' } })
+        .then(function(r) {
+          if (r.ok) flashPaste('Pasted ' + text.length + ' chars', '#3fb950');
+          else      flashPaste('Paste failed (' + r.status + ')', '#f85149');
+        })
+        .catch(function(e) { flashPaste('Paste error', '#f85149'); })
+        .finally(function() { pasteBtn.disabled = false; });
+    }
+
+    function pasteToVM() {
+      // Try the modern Clipboard API first (needs HTTPS + user gesture, both true here)
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText()
+          .then(sendPaste)
+          .catch(function() {
+            // Permission denied or unsupported — fall back to a prompt
+            promptPaste();
+          });
+      } else {
+        promptPaste();
+      }
+    }
+
+    function promptPaste() {
+      var text = prompt('Your browser blocked clipboard access.\nPaste your text here and click OK:');
+      if (text != null) sendPaste(text);
+    }
+
+    // Also intercept Ctrl+Shift+V on the wrapper page itself for power users
+    document.addEventListener('keydown', function(e) {
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        pasteToVM();
+      }
+    });
   </script>
 </body>
 </html>
@@ -313,6 +373,69 @@ def _serve_html(sock, body):
             pass
 
 
+def _handle_paste(client, headers_buf):
+    """POST /paste: body is raw text. Set X11 CLIPBOARD then send Ctrl+V to focused window."""
+    try:
+        # Parse Content-Length to know how much body to read
+        content_length = 0
+        for line in headers_buf.split(b'\r\n'):
+            if line.lower().startswith(b'content-length:'):
+                try:
+                    content_length = int(line.split(b':', 1)[1].strip())
+                except Exception:
+                    content_length = 0
+                break
+
+        # The body may already be in headers_buf after the \r\n\r\n
+        header_end = headers_buf.find(b'\r\n\r\n') + 4
+        body = headers_buf[header_end:]
+        # Read the rest of the body if not all received yet
+        while len(body) < content_length:
+            chunk = client.recv(min(65536, content_length - len(body)))
+            if not chunk:
+                break
+            body += chunk
+
+        # Cap at 1MB to avoid abuse
+        body = body[:1048576]
+
+        env = dict(os.environ, DISPLAY=':1')
+        # 1) Push text into X11 CLIPBOARD selection
+        p1 = subprocess.Popen(
+            ['xclip', '-selection', 'clipboard'],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        p1.communicate(body, timeout=3)
+        # 2) Synthesize Ctrl+V to whichever window currently has keyboard focus
+        subprocess.run(
+            ['xdotool', 'key', '--clearmodifiers', 'ctrl+v'],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+        )
+
+        resp = (b'HTTP/1.1 200 OK\r\n'
+                b'Content-Type: text/plain\r\n'
+                b'Content-Length: 2\r\n'
+                b'Access-Control-Allow-Origin: *\r\n'
+                b'Connection: close\r\n\r\nOK')
+        client.sendall(resp)
+    except Exception as e:
+        try:
+            msg = f'paste failed: {e}'.encode()
+            resp = (b'HTTP/1.1 500 Internal Server Error\r\n'
+                    b'Content-Type: text/plain\r\n'
+                    b'Content-Length: ' + str(len(msg)).encode() + b'\r\n'
+                    b'Connection: close\r\n\r\n') + msg
+            client.sendall(resp)
+        except Exception:
+            pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def _handle(client):
     buf = b''
     try:
@@ -357,6 +480,8 @@ def _handle(client):
         threading.Thread(target=_stream_pcm_ws, args=(client, buf), daemon=True).start()
     elif path in ('/audio', '/audio.ogg'):
         threading.Thread(target=_stream_audio_http, args=(client,), daemon=True).start()
+    elif method == 'POST' and path == '/paste':
+        threading.Thread(target=_handle_paste, args=(client, buf), daemon=True).start()
     else:
         try:
             backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
