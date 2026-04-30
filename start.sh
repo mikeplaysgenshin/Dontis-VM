@@ -111,9 +111,19 @@ FLUX_EOF
 export CHROME_DEVEL_SANDBOX=/nix/store/c5mij30612sfy40hl94yr5vcrhw17nwb-chromium-138.0.7204.100-sandbox/bin/__chromium-suid-sandbox
 # Route audio through PulseAudio
 export PULSE_SERVER=/var/run/pulse/native
-# Use a dedicated user-data-dir so we never collide with Replit's screenshot Chromium
-CHROMIUM_PROFILE=/tmp/blobevm-chrome
+# Persistent profile — stored under $HOME so logged-in sites, bookmarks, history,
+# extensions, and saved tabs survive container restarts. Was previously in /tmp,
+# which Replit wipes between sessions, causing total browser-state loss.
+CHROMIUM_PROFILE="$HOME/.local/share/blobevm-chrome"
 mkdir -p "$CHROMIUM_PROFILE"
+
+# One-time migration: if an old /tmp profile still exists from this session and
+# the persistent one is empty, copy it over so the user keeps any data they
+# accumulated before this fix landed.
+if [ -d /tmp/blobevm-chrome ] && [ -z "$(ls -A "$CHROMIUM_PROFILE" 2>/dev/null)" ]; then
+  echo "Migrating Chromium profile from /tmp to $CHROMIUM_PROFILE..."
+  cp -a /tmp/blobevm-chrome/. "$CHROMIUM_PROFILE/" 2>/dev/null || true
+fi
 
 # Launcher scripts: same command used at startup and from the right-click menu / keys
 cat > /tmp/blobevm-launch-chromium.sh <<EOF
