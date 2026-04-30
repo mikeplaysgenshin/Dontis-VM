@@ -1,5 +1,6 @@
 {pkgs}: {
   deps = [
+    pkgs.mgba
     pkgs.gcc-unwrapped
     pkgs.zlib
     pkgs.libgpg-error

@@ -9,6 +9,15 @@ BlobeVM is a virtual desktop environment that runs in a web browser. In this Rep
 - **Workflow output**: VNC (Replit native VNC preview)
 - **VNC password**: `password`
 
+## Apps installed in the VM
+- **Chromium** — auto-launched on boot. Toolbar: none (already open). Inside-VM: right-click menu → Chromium Browser, or **Alt+B**.
+- **Terminal (xterm)** — toolbar: none. Inside-VM: right-click menu → Terminal, or **Alt+T**.
+- **mGBA 0.10.5** (Game Boy Advance emulator) — installed as Nix package `mgba` (binary at `/nix/store/na4qlh1v9gj5xscpklwg32gv038j8b9v-mgba-0.10.5/bin/mgba-qt`). Three ways to launch:
+  1. Top toolbar **🎮 Apps · mGBA** button (`POST /launch-mgba` in `audio_proxy.py`)
+  2. Inside-VM right-click menu → mGBA Emulator
+  3. Inside-VM keyboard shortcut **Alt+G**
+- All three routes go through `/tmp/blobevm-launch-mgba.sh` (created by `start.sh`), which sets `DISPLAY=:1` and `PULSE_SERVER`.
+
 ## Persistence
 - **Chromium profile**: `~/.local/share/blobevm-chrome` (under `$HOME`, persistent across container restarts). Logged-in sites, cookies, bookmarks, history, extensions, and saved tabs all survive restarts. **Do not move this back to `/tmp`** — `/tmp` is wiped on every container restart, which causes total browser-state loss.
 - **Downloads**: `~/Downloads` (also under persistent `$HOME`).

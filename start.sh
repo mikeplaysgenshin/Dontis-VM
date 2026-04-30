@@ -8,6 +8,7 @@ XSETROOT=/nix/store/21rcnlwxh0qvlc12whjiscb5qmf5nq8a-xsetroot-1.1.3/bin/xsetroot
 CHROMIUM_BIN=/nix/store/884ygjschxqkrkpkrhq83bicvzgj7vb8-chromium-unwrapped-138.0.7204.100/libexec/chromium/chromium
 PULSEAUDIO=/nix/store/px08h5pmb6vr98y751ck1gwn0852iqqq-pulseaudio-17.0/bin/pulseaudio
 PACTL=/nix/store/px08h5pmb6vr98y751ck1gwn0852iqqq-pulseaudio-17.0/bin/pactl
+MGBA_BIN=/nix/store/na4qlh1v9gj5xscpklwg32gv038j8b9v-mgba-0.10.5/bin/mgba-qt
 VNC_PORT=5901
 NOVNC_INTERNAL_PORT=4998
 WEB_PORT=5000
@@ -149,6 +150,17 @@ exec "$CHROMIUM_BIN" \\
 EOF
 chmod +x /tmp/blobevm-launch-chromium.sh
 
+cat > /tmp/blobevm-launch-mgba.sh <<EOF
+#!/bin/bash
+export DISPLAY=:${DISPLAY_NUM}
+export PULSE_SERVER=/var/run/pulse/native
+export HOME="\$HOME"
+# mGBA is a Nix-built binary, so its RUNPATH already finds the libs it needs;
+# no extra LD_LIBRARY_PATH munging required (unlike random AppImages).
+exec "$MGBA_BIN" "\$@"
+EOF
+chmod +x /tmp/blobevm-launch-mgba.sh
+
 cat > /tmp/blobevm-launch-terminal.sh <<EOF
 #!/bin/bash
 export DISPLAY=:${DISPLAY_NUM}
@@ -174,6 +186,7 @@ cat > ~/.fluxbox/menu <<'MENU_EOF'
 [begin] (BlobeVM)
   [exec] (Chromium Browser)  {/tmp/blobevm-launch-chromium.sh}
   [exec] (Terminal)          {/tmp/blobevm-launch-terminal.sh}
+  [exec] (mGBA Emulator)     {/tmp/blobevm-launch-mgba.sh}
   [separator]
   [submenu] (Window Manager)
     [restart] (Restart Fluxbox)
@@ -184,10 +197,11 @@ cat > ~/.fluxbox/menu <<'MENU_EOF'
 [end]
 MENU_EOF
 
-# Keyboard shortcuts: Alt+B = Browser, Alt+T = Terminal, Alt+F2 = command launcher
+# Keyboard shortcuts: Alt+B = Browser, Alt+T = Terminal, Alt+G = mGBA
 cat > ~/.fluxbox/keys <<'KEYS_EOF'
 Mod1 b :Exec /tmp/blobevm-launch-chromium.sh
 Mod1 t :Exec /tmp/blobevm-launch-terminal.sh
+Mod1 g :Exec /tmp/blobevm-launch-mgba.sh
 Mod1 Tab :NextWindow
 Mod1 Shift Tab :PrevWindow
 Mod1 F4 :Close

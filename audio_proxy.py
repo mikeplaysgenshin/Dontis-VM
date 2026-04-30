@@ -87,6 +87,10 @@ WRAPPER_HTML = textwrap.dedent("""\
     <button id="paste-btn" class="bar-btn secondary" onclick="pasteToVM()"
             title="Paste your computer's clipboard into the focused VM window">Paste from Clipboard</button>
     <span style="opacity:0.3;">|</span>
+    <span>&#127918; Apps</span>
+    <button id="mgba-btn" class="bar-btn secondary" onclick="launchMgba()"
+            title="Open the mGBA Game Boy Advance emulator (also: Alt+G inside the VM)">mGBA</button>
+    <span style="opacity:0.3;">|</span>
     <span>&#128193; Files</span>
     <div class="menu-wrap">
       <button id="files-btn" class="bar-btn secondary" onclick="toggleFilesMenu()"
@@ -191,6 +195,27 @@ WRAPPER_HTML = textwrap.dedent("""\
       fetch('/test-tone', { method: 'POST' })
         .then(function(r) { b.textContent = r.ok ? 'Sent!' : 'Failed'; })
         .catch(function() { b.textContent = 'Error'; })
+        .finally(function() {
+          setTimeout(function() { b.textContent = orig; b.disabled = false; }, 2500);
+        });
+    }
+
+    function launchMgba() {
+      var b = document.getElementById('mgba-btn');
+      b.disabled = true;
+      var orig = b.textContent;
+      b.textContent = 'Launching...';
+      fetch('/launch-mgba', { method: 'POST' })
+        .then(function(r) { return r.text().then(function(t){ return {ok:r.ok, text:t}; }); })
+        .then(function(res) {
+          if (res.ok) {
+            b.textContent = 'Opened!';
+          } else {
+            b.textContent = 'Failed';
+            alert('mGBA failed to start:\\n\\n' + (res.text || '(no error output)'));
+          }
+        })
+        .catch(function(err) { b.textContent = 'Error'; alert('Network error: ' + err); })
         .finally(function() {
           setTimeout(function() { b.textContent = orig; b.disabled = false; }, 2500);
         });
@@ -809,6 +834,59 @@ def _handle_test_tone(client):
             pass
 
 
+def _handle_launch_mgba(client):
+    """POST /launch-mgba: spawn the mGBA emulator on display :1.
+
+    Uses the launcher script created by start.sh, which sets DISPLAY and
+    PULSE_SERVER. Captures stderr for ~1s so a failure (missing lib, bad
+    display, etc.) is surfaced to the user instead of vanishing into the void.
+    """
+    launcher = '/tmp/blobevm-launch-mgba.sh'
+    try:
+        if not os.path.exists(launcher):
+            raise FileNotFoundError(
+                f'{launcher} not found. The "Start application" workflow '
+                'creates this on boot — try restarting it.'
+            )
+        proc = subprocess.Popen(
+            [launcher],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+        )
+        # Quick sanity check: if mGBA dies in the first ~1s it almost certainly
+        # failed to start (missing display, bad lib, etc.); grab the stderr.
+        try:
+            _, err = proc.communicate(timeout=1.2)
+            err_msg = (err or b'').decode('utf-8', errors='replace').strip()
+            msg = err_msg.encode() if err_msg else b'mGBA exited immediately with no error output.'
+            resp = (b'HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n'
+                    b'Content-Length: ' + str(len(msg)).encode() +
+                    b'\r\nConnection: close\r\n\r\n') + msg
+            client.sendall(resp)
+            return
+        except subprocess.TimeoutExpired:
+            # Still running after 1.2s -> launched successfully.
+            pass
+        resp = (b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n'
+                b'Content-Length: 2\r\nConnection: close\r\n\r\nOK')
+        client.sendall(resp)
+    except Exception as e:
+        try:
+            msg = f'launch-mgba failed: {e}'.encode()
+            resp = (b'HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n'
+                    b'Content-Length: ' + str(len(msg)).encode() +
+                    b'\r\nConnection: close\r\n\r\n') + msg
+            client.sendall(resp)
+        except Exception:
+            pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def _handle(client):
     buf = b''
     try:
@@ -857,6 +935,8 @@ def _handle(client):
         threading.Thread(target=_handle_paste, args=(client, buf), daemon=True).start()
     elif method == 'POST' and path == '/test-tone':
         threading.Thread(target=_handle_test_tone, args=(client,), daemon=True).start()
+    elif method == 'POST' and path == '/launch-mgba':
+        threading.Thread(target=_handle_launch_mgba, args=(client,), daemon=True).start()
     elif method == 'GET' and path == '/downloads':
         threading.Thread(target=_handle_list_downloads, args=(client,), daemon=True).start()
     elif method == 'POST' and path == '/run':
