@@ -1,5 +1,38 @@
 {pkgs}: {
   deps = [
+    pkgs.gcc-unwrapped
+    pkgs.zlib
+    pkgs.libgpg-error
+    pkgs.e2fsprogs
+    pkgs.pcre2
+    pkgs.glib
+    pkgs.libelf
+    pkgs.wayland
+    pkgs.libpulseaudio
+    pkgs.SDL2
+    pkgs.libGL
+    pkgs.expat
+    pkgs.nss
+    pkgs.nspr
+    pkgs.dbus
+    pkgs.xorg.libXScrnSaver
+    pkgs.xorg.libXtst
+    pkgs.xorg.libXdamage
+    pkgs.xorg.libXcomposite
+    pkgs.xorg.libXfixes
+    pkgs.xorg.libXrender
+    pkgs.xorg.xcbutilwm
+    pkgs.xorg.xcbutilrenderutil
+    pkgs.xorg.xcbutilkeysyms
+    pkgs.xorg.xcbutilimage
+    pkgs.xorg.xcbutil
+    pkgs.xorg.libxcb
+    pkgs.xorg.libX11
+    pkgs.freetype
+    pkgs.fontconfig
+    pkgs.libxkbcommon
+    pkgs.alsa-lib
+    pkgs.libdrm
     pkgs.xclip
     pkgs.unzip
   ];

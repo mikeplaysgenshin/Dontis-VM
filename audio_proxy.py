@@ -50,6 +50,28 @@ WRAPPER_HTML = textwrap.dedent("""\
     #status { font-size: 12px; opacity: 0.5; margin-left: auto; }
     #paste-status { font-size: 11px; opacity: 0.6; min-width: 80px; }
     #vnc-frame { flex: 1; border: none; width: 100%; }
+    .menu-wrap { position: relative; display: inline-block; }
+    .menu-pop {
+      display: none; position: absolute; top: 110%; left: 0; z-index: 1000;
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      min-width: 320px; max-width: 480px; max-height: 60vh; overflow: auto;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 6px;
+    }
+    .menu-pop.open { display: block; }
+    .menu-pop .empty { padding: 12px; opacity: 0.6; font-size: 12px; text-align: center; }
+    .menu-pop .row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px; border-radius: 4px; font-size: 12px; color: #e6edf3;
+    }
+    .menu-pop .row:hover { background: #21262d; }
+    .menu-pop .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .menu-pop .meta { opacity: 0.5; font-size: 11px; min-width: 60px; text-align: right; }
+    .menu-pop .run {
+      background: #238636; border: none; border-radius: 4px;
+      color: #fff; padding: 3px 10px; cursor: pointer; font-size: 11px;
+    }
+    .menu-pop .run:hover { filter: brightness(1.15); }
+    .menu-pop .run:disabled { opacity: 0.5; cursor: wait; }
   </style>
 </head>
 <body>
@@ -64,6 +86,13 @@ WRAPPER_HTML = textwrap.dedent("""\
     <span>&#128203; Clipboard</span>
     <button id="paste-btn" class="bar-btn secondary" onclick="pasteToVM()"
             title="Paste your computer's clipboard into the focused VM window">Paste from Clipboard</button>
+    <span style="opacity:0.3;">|</span>
+    <span>&#128193; Files</span>
+    <div class="menu-wrap">
+      <button id="files-btn" class="bar-btn secondary" onclick="toggleFilesMenu()"
+              title="List files in ~/Downloads inside the VM and open them">Open Downloaded &#9662;</button>
+      <div id="files-menu" class="menu-pop"></div>
+    </div>
     <span id="paste-status"></span>
     <span id="status">Sound off</span>
   </div>
@@ -238,6 +267,114 @@ WRAPPER_HTML = textwrap.dedent("""\
         e.preventDefault();
         pasteToVM();
       }
+    });
+
+    // ---- Downloaded-files menu --------------------------------------------
+    var filesBtn  = document.getElementById('files-btn');
+    var filesMenu = document.getElementById('files-menu');
+
+    function fmtSize(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+      return (n / 1073741824).toFixed(2) + ' GB';
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, function(c) {
+        return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+      });
+    }
+
+    function renderFiles(list) {
+      if (!list || list.length === 0) {
+        filesMenu.innerHTML = '<div class="empty">No files in ~/Downloads yet.<br>Download something in the VM browser first.</div>';
+        return;
+      }
+      var html = '';
+      list.forEach(function(f) {
+        var safe = escapeHtml(f.name);
+        html += '<div class="row">'
+              +   '<span class="name" title="' + safe + '">' + safe + '</span>'
+              +   '<span class="meta">' + fmtSize(f.size) + '</span>'
+              +   '<button class="run" data-name="' + safe + '">Open</button>'
+              + '</div>';
+      });
+      filesMenu.innerHTML = html;
+      filesMenu.querySelectorAll('button.run').forEach(function(b) {
+        b.addEventListener('click', function() { runFile(b, b.dataset.name); });
+      });
+    }
+
+    function refreshFiles() {
+      filesMenu.innerHTML = '<div class="empty">Loading...</div>';
+      fetch('/downloads')
+        .then(function(r) { return r.json(); })
+        .then(renderFiles)
+        .catch(function() {
+          filesMenu.innerHTML = '<div class="empty" style="color:#f85149">Failed to load file list</div>';
+        });
+    }
+
+    function toggleFilesMenu() {
+      var opening = !filesMenu.classList.contains('open');
+      filesMenu.classList.toggle('open');
+      if (opening) refreshFiles();
+    }
+
+    function showRunError(name, msg) {
+      // Render a small error block inline in the menu so the user can read why it failed
+      var box = document.createElement('div');
+      box.style.cssText = 'margin: 6px 4px; padding: 8px 10px; border-radius: 4px;'
+                       + 'background: #2d1117; border: 1px solid #f85149; color: #ffa198;'
+                       + 'font-size: 11px; font-family: monospace; white-space: pre-wrap;'
+                       + 'word-break: break-word; max-height: 180px; overflow: auto;';
+      box.textContent = msg;
+      filesMenu.appendChild(box);
+      filesMenu.scrollTop = filesMenu.scrollHeight;
+    }
+
+    function runFile(btn, name) {
+      btn.disabled = true;
+      var orig = btn.textContent;
+      btn.textContent = 'Opening...';
+      // Clear any previous error block
+      var prev = filesMenu.querySelector('.run-error');
+      if (prev) prev.remove();
+      fetch('/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: name,
+      })
+        .then(function(r) { return r.text().then(function(t) { return { ok: r.ok, text: t }; }); })
+        .then(function(res) {
+          if (res.ok) {
+            btn.textContent = 'Launched';
+            btn.style.background = '#238636';
+            // Auto-close the menu so the launched app gets focus
+            setTimeout(function() { filesMenu.classList.remove('open'); }, 800);
+          } else {
+            btn.textContent = 'Failed';
+            btn.style.background = '#f85149';
+            showRunError(name, res.text);
+          }
+        })
+        .catch(function(e) {
+          btn.textContent = 'Error'; btn.style.background = '#f85149';
+          showRunError(name, 'Network error: ' + e.message);
+        })
+        .finally(function() {
+          setTimeout(function() {
+            btn.textContent = orig; btn.disabled = false; btn.style.background = '';
+          }, 3500);
+        });
+    }
+
+    // Close the menu when clicking outside it
+    document.addEventListener('click', function(e) {
+      if (!filesMenu.classList.contains('open')) return;
+      if (e.target === filesBtn || filesMenu.contains(e.target)) return;
+      filesMenu.classList.remove('open');
     });
   </script>
 </body>
@@ -466,6 +603,180 @@ def _handle_paste(client, headers_buf):
             pass
 
 
+DOWNLOADS_DIR = os.path.realpath(os.path.expanduser('~/Downloads'))
+
+
+def _read_post_body(client, headers_buf, max_bytes=4096):
+    """Helper: parse Content-Length and read the full POST body, returning bytes."""
+    content_length = 0
+    for line in headers_buf.split(b'\r\n'):
+        if line.lower().startswith(b'content-length:'):
+            try:
+                content_length = int(line.split(b':', 1)[1].strip())
+            except Exception:
+                content_length = 0
+            break
+    header_end = headers_buf.find(b'\r\n\r\n') + 4
+    body = headers_buf[header_end:]
+    while len(body) < content_length and len(body) < max_bytes:
+        chunk = client.recv(min(4096, content_length - len(body)))
+        if not chunk:
+            break
+        body += chunk
+    return body[:max_bytes]
+
+
+def _send_simple(client, status, body, ctype='text/plain'):
+    if isinstance(body, str):
+        body = body.encode('utf-8')
+    head = (f'HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\n'
+            f'Content-Length: {len(body)}\r\nCache-Control: no-cache\r\n'
+            f'Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n').encode()
+    try:
+        client.sendall(head + body)
+    except Exception:
+        pass
+
+
+def _handle_list_downloads(client):
+    """GET /downloads: return JSON list of files in ~/Downloads (newest first)."""
+    try:
+        os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+        entries = []
+        for name in os.listdir(DOWNLOADS_DIR):
+            full = os.path.join(DOWNLOADS_DIR, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            # Skip directories and Chromium's in-progress download files
+            if not os.path.isfile(full):
+                continue
+            if name.endswith('.crdownload') or name.endswith('.part'):
+                continue
+            entries.append({'name': name, 'size': st.st_size, 'mtime': st.st_mtime})
+        entries.sort(key=lambda e: e['mtime'], reverse=True)
+        # Strip mtime from response (only used for sorting)
+        for e in entries:
+            e.pop('mtime', None)
+        import json
+        _send_simple(client, '200 OK', json.dumps(entries), 'application/json')
+    except Exception as e:
+        _send_simple(client, '500 Internal Server Error', f'list failed: {e}')
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def _launch_in_vm(argv, settle=2.0):
+    """Spawn `argv` on DISPLAY=:1 with PulseAudio wired up. Wait up to `settle`
+    seconds and return (proc, stderr_text). If the process is still running
+    after `settle`, stderr_text is empty and the caller treats it as a success.
+    If the process dies fast (typical for a missing-library error), we collect
+    stderr and return it so the user sees the real reason in the UI."""
+    env = dict(os.environ,
+               DISPLAY=':1',
+               PULSE_SERVER='/var/run/pulse/native',
+               HOME=os.path.expanduser('~'))
+    # Replit ships needed system libs across two env vars; downloaded binaries
+    # don't inherit them, so merge both into LD_LIBRARY_PATH.
+    parts = [p for p in (env.get('REPLIT_LD_LIBRARY_PATH', ''),
+                         env.get('REPLIT_PYTHON_LD_LIBRARY_PATH', ''),
+                         env.get('LD_LIBRARY_PATH', '')) if p]
+    if parts:
+        env['LD_LIBRARY_PATH'] = ':'.join(parts)
+    proc = subprocess.Popen(
+        argv,
+        env=env,
+        cwd=DOWNLOADS_DIR,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        # Brief wait so we can report fast-fail errors back to the caller.
+        # Long-running apps will time out here, which we treat as success.
+        _, err = proc.communicate(timeout=settle)
+        return proc, (err or b'').decode('utf-8', 'replace').strip()
+    except subprocess.TimeoutExpired:
+        # Still running — drain stderr asynchronously into /dev/null so the
+        # pipe doesn't fill up and block the app later.
+        threading.Thread(
+            target=lambda: proc.stderr and proc.stderr.read(),
+            daemon=True,
+        ).start()
+        return proc, ''
+
+
+def _handle_run_file(client, headers_buf):
+    """POST /run: body is a filename inside ~/Downloads. chmod +x and launch it
+    in the VM under DISPLAY=:1, choosing a sensible launcher for the file type."""
+    try:
+        name = _read_post_body(client, headers_buf, max_bytes=512).decode('utf-8', 'replace').strip()
+        if not name:
+            _send_simple(client, '400 Bad Request', 'empty filename'); return
+
+        # Resolve and confine to ~/Downloads (block path traversal)
+        target = os.path.realpath(os.path.join(DOWNLOADS_DIR, name))
+        if not target.startswith(DOWNLOADS_DIR + os.sep) or not os.path.isfile(target):
+            _send_simple(client, '404 Not Found', f'no such file: {name}'); return
+
+        # Make sure the file is executable (downloads come without +x)
+        try:
+            st = os.stat(target)
+            os.chmod(target, st.st_mode | 0o755)
+        except Exception:
+            pass
+
+        lower = name.lower()
+        # Sniff the first few bytes so we handle text scripts and ELFs correctly
+        try:
+            with open(target, 'rb') as f:
+                head = f.read(8)
+        except Exception:
+            head = b''
+
+        if lower.endswith('.appimage'):
+            # --appimage-extract-and-run avoids needing FUSE, which is missing in containers
+            argv = [target, '--appimage-extract-and-run']
+        elif lower.endswith(('.sh', '.bash')) or head.startswith(b'#!'):
+            # Shell script (or anything with a shebang) — let the kernel pick the interpreter
+            argv = [target]
+        elif head.startswith(b'\x7fELF'):
+            argv = [target]
+        elif lower.endswith('.deb'):
+            _send_simple(client, '400 Bad Request',
+                         '.deb packages need apt/dpkg with sudo, which is not available in this VM. '
+                         'Look for an AppImage or static binary instead.'); return
+        elif lower.endswith(('.zip', '.tar', '.tar.gz', '.tgz', '.7z', '.rar')):
+            _send_simple(client, '400 Bad Request',
+                         'This is an archive, not an executable. Open a terminal in the VM '
+                         '(right-click the desktop) and extract it first.'); return
+        else:
+            # Best-effort: assume it's a binary the user wants to run
+            argv = [target]
+
+        proc, err = _launch_in_vm(argv)
+        if proc.poll() is None:
+            _send_simple(client, '200 OK', f'launched: {os.path.basename(target)}')
+        else:
+            # Process died fast — return the captured stderr so the user can see
+            # the real failure reason (missing library, segfault, etc.).
+            tail = err[-1500:] if err else f'process exited with code {proc.returncode} and produced no error output'
+            _send_simple(client, '500 Internal Server Error',
+                         f'{os.path.basename(target)} exited immediately:\n\n{tail}')
+    except Exception as e:
+        _send_simple(client, '500 Internal Server Error', f'run failed: {e}')
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def _handle_test_tone(client):
     """POST /test-tone: pipe a 2-second 440Hz sine into the default PulseAudio sink."""
     try:
@@ -546,6 +857,10 @@ def _handle(client):
         threading.Thread(target=_handle_paste, args=(client, buf), daemon=True).start()
     elif method == 'POST' and path == '/test-tone':
         threading.Thread(target=_handle_test_tone, args=(client,), daemon=True).start()
+    elif method == 'GET' and path == '/downloads':
+        threading.Thread(target=_handle_list_downloads, args=(client,), daemon=True).start()
+    elif method == 'POST' and path == '/run':
+        threading.Thread(target=_handle_run_file, args=(client, buf), daemon=True).start()
     else:
         try:
             backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
