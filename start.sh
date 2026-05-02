@@ -112,18 +112,32 @@ FLUX_EOF
 export CHROME_DEVEL_SANDBOX=/nix/store/c5mij30612sfy40hl94yr5vcrhw17nwb-chromium-138.0.7204.100-sandbox/bin/__chromium-suid-sandbox
 # Route audio through PulseAudio
 export PULSE_SERVER=/var/run/pulse/native
-# Persistent profile — stored under $HOME so logged-in sites, bookmarks, history,
-# extensions, and saved tabs survive container restarts. Was previously in /tmp,
-# which Replit wipes between sessions, causing total browser-state loss.
-CHROMIUM_PROFILE="$HOME/.local/share/blobevm-chrome"
-mkdir -p "$CHROMIUM_PROFILE"
 
-# One-time migration: if an old /tmp profile still exists from this session and
-# the persistent one is empty, copy it over so the user keeps any data they
-# accumulated before this fix landed.
-if [ -d /tmp/blobevm-chrome ] && [ -z "$(ls -A "$CHROMIUM_PROFILE" 2>/dev/null)" ]; then
-  echo "Migrating Chromium profile from /tmp to $CHROMIUM_PROFILE..."
-  cp -a /tmp/blobevm-chrome/. "$CHROMIUM_PROFILE/" 2>/dev/null || true
+# ── Persistence via workspace btrfs volume ──────────────────────────────────
+# /home/runner is a *volatile* overlayfs — it is wiped on every container
+# restart. The only truly durable storage is /home/runner/workspace, which
+# is a real btrfs block device that survives restarts.
+#
+# Strategy: keep canonical data in workspace/persistent/, then symlink the
+# expected $HOME paths into it so every app "just works".
+PERSISTENT_DIR="/home/runner/workspace/persistent"
+mkdir -p "$PERSISTENT_DIR/chromium-profile" "$PERSISTENT_DIR/Downloads"
+
+# ~/Downloads symlink
+rm -rf "$HOME/Downloads"                 # remove the empty volatile dir
+ln -sfn "$PERSISTENT_DIR/Downloads" "$HOME/Downloads"
+
+# Chromium profile symlink
+mkdir -p "$HOME/.local/share"
+rm -rf "$HOME/.local/share/blobevm-chrome"
+ln -sfn "$PERSISTENT_DIR/chromium-profile" "$HOME/.local/share/blobevm-chrome"
+
+CHROMIUM_PROFILE="$HOME/.local/share/blobevm-chrome"
+
+# One-time migration: pull any leftover data from the old /tmp profile
+if [ -d /tmp/blobevm-chrome ] && [ -z "$(ls -A "$PERSISTENT_DIR/chromium-profile" 2>/dev/null)" ]; then
+  echo "Migrating Chromium profile from /tmp to $PERSISTENT_DIR/chromium-profile..."
+  cp -a /tmp/blobevm-chrome/. "$PERSISTENT_DIR/chromium-profile/" 2>/dev/null || true
 fi
 
 # Launcher scripts: same command used at startup and from the right-click menu / keys
