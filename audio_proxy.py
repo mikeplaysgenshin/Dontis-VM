@@ -113,28 +113,23 @@ WRAPPER_HTML = textwrap.dedent("""\
 </head>
 <body>
   <div id="audio-bar">
-    <span>&#128266; VM Audio</span>
-    <button id="audio-toggle" class="bar-btn" onclick="toggleAudio()">Enable Sound</button>
+    <button id="audio-toggle" class="bar-btn" onclick="toggleAudio()" title="Enable/mute VM audio">&#128266; Sound</button>
     <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="0.8"
            oninput="setVolume(this.value)" title="Volume" disabled>
     <button id="test-tone-btn" class="bar-btn secondary" onclick="playTestTone()"
-            title="Play a 2-second beep inside the VM so you can verify sound is reaching your speakers">Test Tone</button>
+            title="Play a 2-second beep to verify sound is working">Tone</button>
     <span style="opacity:0.3;">|</span>
-    <span>&#128203; Clipboard</span>
     <button id="paste-btn" class="bar-btn secondary" onclick="pasteToVM()"
-            title="Paste your computer's clipboard into the focused VM window">Paste from Clipboard</button>
+            title="Paste your clipboard into the focused VM window">&#128203; Paste</button>
     <span style="opacity:0.3;">|</span>
-    <span>&#127918; Apps</span>
     <button id="mgba-btn" class="bar-btn secondary" onclick="launchMgba()"
-            title="Open the mGBA Game Boy Advance emulator (also: Alt+G inside the VM)">mGBA</button>
-    <span style="opacity:0.3;">|</span>
+            title="Open the mGBA Game Boy Advance emulator (also: Alt+G inside the VM)">&#127918; mGBA</button>
     <button id="game-mode-btn" class="bar-btn secondary" onclick="toggleGameMode()"
-            title="Game Cursor Mode: hides the browser cursor so only the game&#39;s cursor shows, and locks the mouse inside the VM so it can&#39;t escape during fast camera moves. Click again or press Esc to exit.">&#127918; Game Cursor</button>
+            title="Game Cursor Mode: hides the browser cursor so only the game&#39;s cursor shows, and locks the mouse inside the VM so it can&#39;t escape. Click again or press Esc to exit.">&#127918; Game Cursor</button>
     <span style="opacity:0.3;">|</span>
-    <span>&#128193; Files</span>
     <div class="menu-wrap">
       <button id="files-btn" class="bar-btn secondary" onclick="toggleFilesMenu()"
-              title="List files in ~/Downloads inside the VM and open them">Open Downloaded &#9662;</button>
+              title="List files in ~/Downloads inside the VM and open them">&#128193; Downloads &#9662;</button>
       <div id="files-menu" class="menu-pop"></div>
     </div>
     <span id="paste-status"></span>
