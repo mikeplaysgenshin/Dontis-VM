@@ -50,6 +50,39 @@ WRAPPER_HTML = textwrap.dedent("""\
     #status { font-size: 12px; opacity: 0.5; margin-left: auto; }
     #paste-status { font-size: 11px; opacity: 0.6; min-width: 80px; }
     #vnc-frame { flex: 1; border: none; width: 100%; }
+    /* Game cursor mode ---------------------------------------------------- */
+    /* In game mode the browser cursor is hidden so only the VM cursor shows. */
+    body.game-mode #vnc-frame { cursor: none; }
+    #game-mode-btn.active { background: #da3633 !important; color: #fff; }
+    /* Transparent overlay sits over the VNC iframe when game mode is on.
+       It owns the pointer-lock and forwards all input to the iframe below.  */
+    #game-overlay {
+      display: none;
+      position: fixed;
+      /* sits just below the 40px toolbar, covering the whole VNC frame */
+      inset: 40px 0 0 0;
+      z-index: 50;
+      cursor: none;
+      background: transparent;
+    }
+    body.game-mode #game-overlay { display: block; }
+    /* Hint banner shown in the centre of the VNC area */
+    #game-hint {
+      display: none;
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.75);
+      color: #fff;
+      padding: 14px 28px;
+      border-radius: 10px;
+      font-size: 15px;
+      pointer-events: none;
+      z-index: 60;
+      text-align: center;
+      line-height: 1.6;
+    }
+    /* -------------------------------------------------------------------- */
     .menu-wrap { position: relative; display: inline-block; }
     .menu-pop {
       display: none; position: absolute; top: 110%; left: 0; z-index: 1000;
@@ -91,6 +124,9 @@ WRAPPER_HTML = textwrap.dedent("""\
     <button id="mgba-btn" class="bar-btn secondary" onclick="launchMgba()"
             title="Open the mGBA Game Boy Advance emulator (also: Alt+G inside the VM)">mGBA</button>
     <span style="opacity:0.3;">|</span>
+    <button id="game-mode-btn" class="bar-btn secondary" onclick="toggleGameMode()"
+            title="Game Cursor Mode: hides the browser cursor so only the game&#39;s cursor shows, and locks the mouse inside the VM so it can&#39;t escape during fast camera moves. Click again or press Esc to exit.">&#127918; Game Cursor</button>
+    <span style="opacity:0.3;">|</span>
     <span>&#128193; Files</span>
     <div class="menu-wrap">
       <button id="files-btn" class="bar-btn secondary" onclick="toggleFilesMenu()"
@@ -104,6 +140,10 @@ WRAPPER_HTML = textwrap.dedent("""\
     src="/vnc.html?autoconnect=true&password=password&resize=scale"
     allow="fullscreen">
   </iframe>
+  <!-- Game cursor overlay — owns pointer-lock; forwards events to iframe -->
+  <div id="game-overlay"></div>
+  <!-- Hint shown to user when game mode is active -->
+  <div id="game-hint"></div>
   <script>
     // Raw PCM Web Audio API player
     // Server sends s16le stereo 44100Hz binary frames over WebSocket
@@ -220,6 +260,169 @@ WRAPPER_HTML = textwrap.dedent("""\
           setTimeout(function() { b.textContent = orig; b.disabled = false; }, 2500);
         });
     }
+
+    // ── Game Cursor Mode ─────────────────────────────────────────────────────
+    // Solves two problems for action/RPG games like Genshin:
+    //   1. Double cursor: browser arrow on top of the game's own cursor.
+    //      Fix: cursor:none on the VNC frame so only the VM cursor is visible.
+    //   2. Mouse escaping: fast camera swings send the cursor outside the VNC
+    //      window. Fix: Pointer Lock on the overlay div keeps the mouse captured
+    //      and we forward all mouse events (with accumulated deltas) to the
+    //      noVNC canvas via synthetic events (same-origin = allowed).
+    var gameMode   = false;   // true while game cursor mode is on
+    var gameLocked = false;   // true while browser has granted Pointer Lock
+    var gameCurX   = 0;       // virtual cursor X relative to VNC frame
+    var gameCurY   = 0;       // virtual cursor Y relative to VNC frame
+    var gameHintTimer = null;
+
+    var gameOverlay = document.getElementById('game-overlay');
+    var gameHint    = document.getElementById('game-hint');
+
+    function showHint(msg, autohideMs) {
+      if (gameHintTimer) { clearTimeout(gameHintTimer); gameHintTimer = null; }
+      if (!msg) { gameHint.style.display = 'none'; gameHint.textContent = ''; return; }
+      gameHint.textContent = msg;
+      gameHint.style.display = 'block';
+      if (autohideMs) {
+        gameHintTimer = setTimeout(function() {
+          gameHint.style.display = 'none';
+          gameHint.textContent   = '';
+          gameHintTimer = null;
+        }, autohideMs);
+      }
+    }
+
+    // Get the noVNC canvas from the same-origin iframe.
+    function getVncCanvas() {
+      try {
+        var frame = document.getElementById('vnc-frame');
+        return frame.contentDocument && frame.contentDocument.querySelector('canvas');
+      } catch (e) { return null; }
+    }
+
+    // Dispatch a synthetic MouseEvent to the noVNC canvas.
+    // x, y are already IFRAME-relative (relative to the top-left of the VNC
+    // frame), which is what noVNC's mouse handler expects when it subtracts
+    // the canvas's getBoundingClientRect() from clientX/clientY.
+    // We pass view:frame.contentWindow so the event lives in the iframe's
+    // coordinate space — do NOT add rect.left/top here.
+    function fwdMouse(type, srcEvt, x, y) {
+      var canvas = getVncCanvas();
+      if (!canvas) return;
+      var frame = document.getElementById('vnc-frame');
+      try {
+        canvas.dispatchEvent(new MouseEvent(type, {
+          bubbles: true, cancelable: true,
+          view: frame.contentWindow,
+          screenX: x, screenY: y,
+          clientX: x, clientY: y,
+          movementX: srcEvt.movementX || 0,
+          movementY: srcEvt.movementY || 0,
+          button:  srcEvt.button  || 0,
+          buttons: srcEvt.buttons || 0,
+          shiftKey: srcEvt.shiftKey, ctrlKey: srcEvt.ctrlKey,
+          altKey:   srcEvt.altKey,  metaKey:  srcEvt.metaKey,
+        }));
+      } catch (e) {}
+    }
+
+    function toggleGameMode() {
+      if (gameMode) { exitGameMode(); } else { enterGameMode(); }
+    }
+
+    function enterGameMode() {
+      gameMode = true;
+      document.body.classList.add('game-mode');
+      var gbtn = document.getElementById('game-mode-btn');
+      gbtn.textContent = '\\u{1F3AE} Exit Game Mode';
+      gbtn.classList.add('active');
+      showHint('\\u{1F3AE} Game Cursor ON\\nClick the VM to lock mouse\\n(Esc = release lock, click button again = exit)', 0);
+    }
+
+    function exitGameMode() {
+      gameMode   = false;
+      gameLocked = false;
+      document.body.classList.remove('game-mode');
+      var gbtn = document.getElementById('game-mode-btn');
+      gbtn.textContent = '\\u{1F3AE} Game Cursor';
+      gbtn.classList.remove('active');
+      if (document.exitPointerLock) document.exitPointerLock();
+      showHint('');
+    }
+
+    // Clicking the overlay (which is over the VNC frame in game mode)
+    // requests pointer lock.  preventDefault() stops the overlay from
+    // stealing focus away from the iframe so keyboard input keeps going to the VM.
+    gameOverlay.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      if (!gameLocked) {
+        // Initialise virtual cursor to wherever the user clicked
+        var frame = document.getElementById('vnc-frame');
+        var rect  = frame.getBoundingClientRect();
+        gameCurX  = Math.max(0, Math.min(rect.width  - 1, e.clientX - rect.left));
+        gameCurY  = Math.max(0, Math.min(rect.height - 1, e.clientY - rect.top));
+        gameOverlay.requestPointerLock();
+      } else {
+        // Already locked: forward the click to noVNC
+        fwdMouse('mousedown', e, gameCurX, gameCurY);
+      }
+    });
+
+    gameOverlay.addEventListener('mouseup', function(e) {
+      if (gameLocked) { e.preventDefault(); fwdMouse('mouseup', e, gameCurX, gameCurY); }
+    });
+
+    // Suppress right-click context menu in game mode; forward the button events
+    gameOverlay.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+    // Pointer Lock state changes
+    document.addEventListener('pointerlockchange', function() {
+      if (document.pointerLockElement === gameOverlay) {
+        // Lock just acquired
+        gameLocked = true;
+        // Give keyboard focus to the iframe so game keys work
+        try { document.getElementById('vnc-frame').contentWindow.focus(); } catch(e) {}
+        showHint('\\u{1F512} Mouse locked — Esc to release', 2500);
+      } else if (gameLocked) {
+        // Lock was released (user pressed Esc or browser forced it)
+        gameLocked = false;
+        if (gameMode) {
+          showHint('\\u{1F513} Mouse released — click VM to re-lock', 0);
+        }
+      }
+    });
+
+    document.addEventListener('pointerlockerror', function() {
+      showHint('\\u26A0 Pointer Lock denied — try clicking inside the VM first', 2500);
+    });
+
+    // Forward mouse MOVEMENT when locked, accumulating deltas into virtual pos
+    document.addEventListener('mousemove', function(e) {
+      if (!gameLocked) return;
+      var frame = document.getElementById('vnc-frame');
+      var rect  = frame.getBoundingClientRect();
+      gameCurX  = Math.max(0, Math.min(rect.width  - 1, gameCurX + e.movementX));
+      gameCurY  = Math.max(0, Math.min(rect.height - 1, gameCurY + e.movementY));
+      fwdMouse('mousemove', e, gameCurX, gameCurY);
+    });
+
+    // Forward scroll/wheel events (gameCurX/Y are already iframe-relative)
+    document.addEventListener('wheel', function(e) {
+      if (!gameLocked) return;
+      var canvas = getVncCanvas();
+      if (!canvas) return;
+      var frame = document.getElementById('vnc-frame');
+      try {
+        canvas.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true, cancelable: true,
+          view: frame.contentWindow,
+          clientX: gameCurX, clientY: gameCurY,
+          deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ,
+          deltaMode: e.deltaMode,
+        }));
+      } catch (er) {}
+    }, { passive: true });
+    // ── End Game Cursor Mode ─────────────────────────────────────────────────
 
     function toggleAudio() {
       if (!on) {
