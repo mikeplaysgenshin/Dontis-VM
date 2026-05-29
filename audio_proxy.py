@@ -32,16 +32,20 @@ WRAPPER_HTML = textwrap.dedent("""\
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #0d1117; display: flex; flex-direction: column; height: 100vh; overflow: hidden; font-family: sans-serif; }
     #audio-bar {
-      display: flex; align-items: center; gap: 12px;
+      display: flex; align-items: center; gap: 8px;
       background: #161b22; border-bottom: 1px solid #30363d;
-      padding: 6px 16px; height: 40px; flex-shrink: 0;
-      color: #e6edf3; font-size: 13px; user-select: none;
+      padding: 4px 12px; height: 40px; flex-shrink: 0;
+      color: #e6edf3; font-size: 12px; user-select: none;
+      overflow-x: auto; overflow-y: hidden;
+      white-space: nowrap; scrollbar-width: none;
     }
+    #audio-bar::-webkit-scrollbar { display: none; }
+    #audio-bar > * { flex-shrink: 0; }
     #audio-bar span { opacity: 0.7; }
     .bar-btn {
       background: #238636; border: none; border-radius: 6px;
-      color: #fff; padding: 5px 14px; cursor: pointer; font-size: 13px;
-      transition: background 0.15s;
+      color: #fff; padding: 4px 10px; cursor: pointer; font-size: 12px;
+      transition: background 0.15s; white-space: nowrap;
     }
     #audio-toggle.active { background: #8250df; }
     .bar-btn:hover { filter: brightness(1.15); }
