@@ -86,6 +86,15 @@ WRAPPER_HTML = textwrap.dedent("""\
     /* In game mode the browser cursor is hidden so only the VM cursor shows. */
     body.game-mode #vnc-frame { cursor: none; }
     #game-mode-btn.active { background: #da3633 !important; color: #fff; }
+    /* Touch overlay — always present, forwards finger gestures as mouse events */
+    #touch-overlay {
+      position: fixed;
+      inset: 40px 0 0 0;
+      z-index: 10;
+      background: transparent;
+      touch-action: none;
+    }
+    body.bar-hidden #touch-overlay { inset: 0; }
     /* Transparent overlay sits over the VNC iframe when game mode is on.
        It owns the pointer-lock and forwards all input to the iframe below.  */
     #game-overlay {
@@ -177,6 +186,8 @@ WRAPPER_HTML = textwrap.dedent("""\
     src="/vnc.html?autoconnect=true&password=password&resize=scale"
     allow="fullscreen">
   </iframe>
+  <!-- Touch overlay — forwards finger gestures to the noVNC canvas as mouse events -->
+  <div id="touch-overlay"></div>
   <!-- Game cursor overlay — owns pointer-lock; forwards events to iframe -->
   <div id="game-overlay"></div>
   <!-- Hint shown to user when game mode is active -->
@@ -461,6 +472,136 @@ WRAPPER_HTML = textwrap.dedent("""\
       } catch (er) {}
     }, { passive: true });
     // ── End Game Cursor Mode ─────────────────────────────────────────────────
+
+    // ── Touch Control ────────────────────────────────────────────────────────
+    // Maps finger gestures to mouse events forwarded to the noVNC canvas.
+    //   1-finger tap/drag  → left mouse button
+    //   2-finger tap        → right-click (context menu)
+    //   2-finger drag       → scroll wheel
+    //   long-press (600 ms) → right-click
+    (function() {
+      var overlay   = document.getElementById('touch-overlay');
+      var lastX = 0, lastY = 0;       // last iframe-relative pos
+      var twoStart  = false;          // did a 2-finger gesture start?
+      var twoMoved  = false;          // did the 2-finger gesture move (scroll)?
+      var prev2MidY = 0;              // previous 2-finger midpoint Y (iframe-rel)
+      var longTimer = null;           // long-press timer handle
+      var LONG_MS   = 600;            // ms threshold for long-press
+
+      function getFrame() { return document.getElementById('vnc-frame'); }
+
+      function toIframe(touch) {
+        var r = getFrame().getBoundingClientRect();
+        return {
+          x: Math.max(0, Math.min(r.width  - 1, touch.clientX - r.left)),
+          y: Math.max(0, Math.min(r.height - 1, touch.clientY - r.top))
+        };
+      }
+
+      function sendMouse(type, x, y, button, buttons) {
+        var canvas = getVncCanvas();
+        if (!canvas) return;
+        try {
+          canvas.dispatchEvent(new MouseEvent(type, {
+            bubbles: true, cancelable: true,
+            view: getFrame().contentWindow,
+            screenX: x, screenY: y, clientX: x, clientY: y,
+            button: button || 0, buttons: buttons !== undefined ? buttons : 0,
+          }));
+        } catch(e) {}
+      }
+
+      function rightClick(x, y) {
+        sendMouse('mousedown', x, y, 2, 2);
+        sendMouse('mouseup',   x, y, 2, 0);
+      }
+
+      function cancelLong() {
+        if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+      }
+
+      overlay.addEventListener('touchstart', function(e) {
+        e.preventDefault();
+        cancelLong();
+        if (e.touches.length === 1) {
+          var p = toIframe(e.touches[0]);
+          lastX = p.x; lastY = p.y;
+          twoStart = false; twoMoved = false;
+          // Start long-press timer
+          longTimer = setTimeout(function() {
+            longTimer = null;
+            rightClick(lastX, lastY);
+            // Release any ongoing left-drag
+            sendMouse('mouseup', lastX, lastY, 0, 0);
+          }, LONG_MS);
+          sendMouse('mousemove', p.x, p.y, 0, 0);
+          sendMouse('mousedown', p.x, p.y, 0, 1);
+        } else if (e.touches.length === 2) {
+          // Cancel any in-progress 1-finger press
+          sendMouse('mouseup', lastX, lastY, 0, 0);
+          twoStart = true; twoMoved = false;
+          var r = getFrame().getBoundingClientRect();
+          prev2MidY = ((e.touches[0].clientY + e.touches[1].clientY) / 2) - r.top;
+          var midX = ((e.touches[0].clientX + e.touches[1].clientX) / 2) - r.left;
+          lastX = Math.max(0, Math.min(r.width  - 1, midX));
+          lastY = Math.max(0, Math.min(r.height - 1, prev2MidY));
+        }
+      }, { passive: false });
+
+      overlay.addEventListener('touchmove', function(e) {
+        e.preventDefault();
+        cancelLong();
+        if (e.touches.length === 1 && !twoStart) {
+          var p = toIframe(e.touches[0]);
+          sendMouse('mousemove', p.x, p.y, 0, 1);
+          lastX = p.x; lastY = p.y;
+        } else if (e.touches.length === 2 && twoStart) {
+          twoMoved = true;
+          var r = getFrame().getBoundingClientRect();
+          var midY = ((e.touches[0].clientY + e.touches[1].clientY) / 2) - r.top;
+          var delta = prev2MidY - midY;   // positive = scroll down
+          prev2MidY = midY;
+          var canvas = getVncCanvas();
+          if (canvas) {
+            try {
+              canvas.dispatchEvent(new WheelEvent('wheel', {
+                bubbles: true, cancelable: true,
+                view: getFrame().contentWindow,
+                clientX: lastX, clientY: lastY,
+                deltaY: delta * 4, deltaMode: 0,
+              }));
+            } catch(er) {}
+          }
+        }
+      }, { passive: false });
+
+      overlay.addEventListener('touchend', function(e) {
+        e.preventDefault();
+        cancelLong();
+        if (e.touches.length === 0) {
+          if (twoStart && !twoMoved) {
+            // 2-finger tap = right-click
+            rightClick(lastX, lastY);
+          } else if (!twoStart) {
+            sendMouse('mouseup', lastX, lastY, 0, 0);
+          }
+          twoStart = false; twoMoved = false;
+        } else if (e.touches.length === 1 && twoStart) {
+          // Lifted one finger: resume 1-finger tracking
+          twoStart = false; twoMoved = false;
+          var p = toIframe(e.touches[0]);
+          lastX = p.x; lastY = p.y;
+          sendMouse('mousedown', p.x, p.y, 0, 1);
+        }
+      }, { passive: false });
+
+      overlay.addEventListener('touchcancel', function(e) {
+        cancelLong();
+        sendMouse('mouseup', lastX, lastY, 0, 0);
+        twoStart = false; twoMoved = false;
+      }, { passive: false });
+    })();
+    // ── End Touch Control ────────────────────────────────────────────────────
 
     // ── Toolbar hide / fullscreen ────────────────────────────────────────────
     var barHidden = false;
