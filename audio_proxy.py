@@ -154,6 +154,10 @@ WRAPPER_HTML = textwrap.dedent("""\
             title="Open the mGBA Game Boy Advance emulator (also: Alt+G inside the VM)">&#127918; mGBA</button>
     <button id="game-mode-btn" class="bar-btn secondary" onclick="toggleGameMode()"
             title="Game Cursor Mode: hides the browser cursor so only the game&#39;s cursor shows, and locks the mouse inside the VM so it can&#39;t escape. Click again or press Esc to exit.">&#127918; Game Cursor</button>
+    <input type="range" id="sens-slider" min="0.1" max="2.0" step="0.05" value="0.5"
+           oninput="gameSens=parseFloat(this.value);document.getElementById('sens-label').textContent=Math.round(gameSens*100)+'%'"
+           title="Game cursor sensitivity" style="width:70px;accent-color:#da3633;cursor:pointer;flex-shrink:0;">
+    <span id="sens-label" style="font-size:11px;opacity:0.6;min-width:30px;">50%</span>
     <span style="opacity:0.3;">|</span>
     <div class="menu-wrap">
       <button id="files-btn" class="bar-btn secondary" onclick="toggleFilesMenu()"
@@ -306,6 +310,7 @@ WRAPPER_HTML = textwrap.dedent("""\
     var gameLocked = false;   // true while browser has granted Pointer Lock
     var gameCurX   = 0;       // virtual cursor X relative to VNC frame
     var gameCurY   = 0;       // virtual cursor Y relative to VNC frame
+    var gameSens   = 0.5;     // sensitivity multiplier (slider default = 50%)
     var gameHintTimer = null;
 
     var gameOverlay = document.getElementById('game-overlay');
@@ -434,8 +439,8 @@ WRAPPER_HTML = textwrap.dedent("""\
       if (!gameLocked) return;
       var frame = document.getElementById('vnc-frame');
       var rect  = frame.getBoundingClientRect();
-      gameCurX  = Math.max(0, Math.min(rect.width  - 1, gameCurX + e.movementX));
-      gameCurY  = Math.max(0, Math.min(rect.height - 1, gameCurY + e.movementY));
+      gameCurX  = Math.max(0, Math.min(rect.width  - 1, gameCurX + e.movementX * gameSens));
+      gameCurY  = Math.max(0, Math.min(rect.height - 1, gameCurY + e.movementY * gameSens));
       fwdMouse('mousemove', e, gameCurX, gameCurY);
     });
 
