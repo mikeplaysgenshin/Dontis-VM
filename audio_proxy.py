@@ -600,6 +600,61 @@ WRAPPER_HTML = textwrap.dedent("""\
         sendMouse('mouseup', lastX, lastY, 0, 0);
         twoStart = false; twoMoved = false;
       }, { passive: false });
+
+      // ── Mouse pass-through ──────────────────────────────────────────────────
+      // The overlay sits on top of the iframe so it intercepts all mouse events.
+      // Forward them to the noVNC canvas so regular mouse users are unaffected.
+      // (Game mode has its own higher-z overlay that handles this path instead.)
+      function mousePos(e) {
+        var r = getFrame().getBoundingClientRect();
+        return {
+          x: Math.max(0, Math.min(r.width  - 1, e.clientX - r.left)),
+          y: Math.max(0, Math.min(r.height - 1, e.clientY - r.top))
+        };
+      }
+
+      overlay.addEventListener('mousedown', function(e) {
+        if (gameMode) return;
+        var p = mousePos(e);
+        try { getFrame().contentWindow.focus(); } catch(ex) {}
+        sendMouse('mousedown', p.x, p.y, e.button, e.buttons);
+      });
+      overlay.addEventListener('mouseup', function(e) {
+        if (gameMode) return;
+        var p = mousePos(e);
+        sendMouse('mouseup', p.x, p.y, e.button, e.buttons);
+      });
+      overlay.addEventListener('mousemove', function(e) {
+        if (gameMode) return;
+        var p = mousePos(e);
+        sendMouse('mousemove', p.x, p.y, e.button, e.buttons);
+      });
+      overlay.addEventListener('dblclick', function(e) {
+        if (gameMode) return;
+        var p = mousePos(e);
+        sendMouse('dblclick', p.x, p.y, e.button, e.buttons);
+      });
+      overlay.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        if (gameMode) return;
+        var p = mousePos(e);
+        rightClick(p.x, p.y);
+      });
+      overlay.addEventListener('wheel', function(e) {
+        if (gameMode) return;
+        var p = mousePos(e);
+        var canvas = getVncCanvas();
+        if (!canvas) return;
+        try {
+          canvas.dispatchEvent(new WheelEvent('wheel', {
+            bubbles: true, cancelable: true,
+            view: getFrame().contentWindow,
+            clientX: p.x, clientY: p.y,
+            deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ,
+            deltaMode: e.deltaMode,
+          }));
+        } catch(er) {}
+      }, { passive: true });
     })();
     // ── End Touch Control ────────────────────────────────────────────────────
 
