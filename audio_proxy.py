@@ -658,6 +658,60 @@ WRAPPER_HTML = textwrap.dedent("""\
     })();
     // ── End Touch Control ────────────────────────────────────────────────────
 
+    // ── Keyboard forwarding ───────────────────────────────────────────────────
+    // The touch overlay sits over the iframe so mouse clicks land on the
+    // overlay div, not the iframe — meaning the iframe never gets natural
+    // keyboard focus.  Capture key events in the parent window and re-dispatch
+    // them into the iframe's document so noVNC receives every keystroke.
+    //
+    // Exemptions (handled in the parent window, must NOT be forwarded):
+    //   Ctrl+B        → toggle toolbar
+    //   Ctrl+Shift+V  → paste clipboard to VM
+    //
+    // Skip forwarding when a real input element in the toolbar has focus
+    // (only the sensitivity range slider exists today, but belt-and-suspenders).
+    (function() {
+      function iframeDoc() {
+        try {
+          var f = document.getElementById('vnc-frame');
+          return f && f.contentDocument;
+        } catch(e) { return null; }
+      }
+
+      function fwdKey(e) {
+        // Let parent-window shortcuts through without forwarding
+        if (e.ctrlKey && !e.shiftKey && e.key === 'b') return;
+        if (e.ctrlKey &&  e.shiftKey && e.key.toLowerCase() === 'v') return;
+
+        // Don't steal keys from toolbar inputs
+        var a = document.activeElement;
+        if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT')) return;
+
+        var doc = iframeDoc();
+        if (!doc) return;
+
+        // If the iframe already has focus the event went there directly — skip
+        if (a && a.id === 'vnc-frame') return;
+
+        try {
+          doc.dispatchEvent(new KeyboardEvent(e.type, {
+            bubbles: true, cancelable: true,
+            key: e.key, code: e.code,
+            keyCode: e.keyCode, charCode: e.charCode, which: e.which,
+            shiftKey: e.shiftKey, ctrlKey: e.ctrlKey,
+            altKey: e.altKey, metaKey: e.metaKey,
+            repeat: e.repeat, location: e.location,
+          }));
+          e.preventDefault();
+        } catch(ex) {}
+      }
+
+      document.addEventListener('keydown',  fwdKey, true);
+      document.addEventListener('keyup',    fwdKey, true);
+      document.addEventListener('keypress', fwdKey, true);
+    })();
+    // ── End Keyboard forwarding ───────────────────────────────────────────────
+
     // ── Toolbar hide / fullscreen ────────────────────────────────────────────
     var barHidden = false;
 
