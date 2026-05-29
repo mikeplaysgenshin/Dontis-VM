@@ -53,7 +53,35 @@ WRAPPER_HTML = textwrap.dedent("""\
     #volume-slider { accent-color: #238636; cursor: pointer; width: 90px; }
     #status { font-size: 12px; opacity: 0.5; margin-left: auto; }
     #paste-status { font-size: 11px; opacity: 0.6; min-width: 80px; }
-    #vnc-frame { flex: 1; border: none; width: 100%; }
+    #vnc-frame { flex: 1; border: none; width: 100%; min-height: 0; }
+    /* ── Toolbar hide / fullscreen ─────────────────────────────────────────── */
+    #audio-bar {
+      transition: transform 0.22s ease, opacity 0.22s ease;
+    }
+    /* When bar is hidden, slide it up off-screen */
+    body.bar-hidden #audio-bar {
+      transform: translateY(-100%);
+      opacity: 0;
+      pointer-events: none;
+      position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+    }
+    /* VNC frame fills full height when bar is hidden */
+    body.bar-hidden #vnc-frame { position: fixed; inset: 0; }
+    /* Reveal strip — invisible 10px hot zone at top edge,
+       visible only when bar is hidden so user can drag it back */
+    #bar-reveal {
+      display: none;
+      position: fixed; top: 0; left: 0; right: 0; height: 10px;
+      z-index: 9999; cursor: n-resize;
+      background: linear-gradient(to bottom, rgba(35,134,54,0.55), transparent);
+    }
+    body.bar-hidden #bar-reveal { display: block; }
+    /* Collapse / expand button */
+    #bar-toggle-btn { margin-left: auto; opacity: 0.6; font-size: 11px; padding: 2px 7px; }
+    #bar-toggle-btn:hover { opacity: 1; }
+    /* Fullscreen button */
+    #fs-btn { font-size: 13px; padding: 3px 8px; }
+    /* ──────────────────────────────────────────────────────────────────────── */
     /* Game cursor mode ---------------------------------------------------- */
     /* In game mode the browser cursor is hidden so only the VM cursor shows. */
     body.game-mode #vnc-frame { cursor: none; }
@@ -134,7 +162,13 @@ WRAPPER_HTML = textwrap.dedent("""\
     </div>
     <span id="paste-status"></span>
     <span id="status">Sound off</span>
+    <button id="fs-btn" class="bar-btn secondary" onclick="toggleFullscreen()"
+            title="Fullscreen (keeps toolbar visible). Ctrl+B = hide/show toolbar.">&#x26F6;</button>
+    <button id="bar-toggle-btn" class="bar-btn secondary" onclick="toggleBar()"
+            title="Hide toolbar (Ctrl+B). When hidden, click the green strip at the top to show it again.">&#9650;</button>
   </div>
+  <!-- Reveal strip: click or hover to bring toolbar back when it is hidden -->
+  <div id="bar-reveal" onclick="showBar()" title="Click to show toolbar (or press Ctrl+B)"></div>
   <iframe id="vnc-frame"
     src="/vnc.html?autoconnect=true&password=password&resize=scale"
     allow="fullscreen">
@@ -422,6 +456,54 @@ WRAPPER_HTML = textwrap.dedent("""\
       } catch (er) {}
     }, { passive: true });
     // ── End Game Cursor Mode ─────────────────────────────────────────────────
+
+    // ── Toolbar hide / fullscreen ────────────────────────────────────────────
+    var barHidden = false;
+
+    function showBar() {
+      barHidden = false;
+      document.body.classList.remove('bar-hidden');
+      document.getElementById('bar-toggle-btn').textContent = '\u25b2'; // ▲
+      // Game overlay must sit below the 40px toolbar when bar is visible
+      document.getElementById('game-overlay').style.top = '';
+    }
+
+    function hideBar() {
+      barHidden = true;
+      document.body.classList.add('bar-hidden');
+      document.getElementById('bar-toggle-btn').textContent = '\u25bc'; // ▼
+      // Game overlay should cover full viewport when bar is hidden
+      document.getElementById('game-overlay').style.top = '0';
+    }
+
+    function toggleBar() {
+      if (barHidden) { showBar(); } else { hideBar(); }
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        // Fullscreen the WHOLE page so our toolbar stays visible.
+        // (noVNC's own fullscreen button only fullscreens the iframe,
+        //  which hides our toolbar — this is the alternative.)
+        document.documentElement.requestFullscreen().catch(function(e) {
+          console.warn('Fullscreen request failed:', e);
+        });
+      } else {
+        document.exitFullscreen();
+      }
+    }
+
+    // Update ⛶ icon to reflect actual fullscreen state
+    document.addEventListener('fullscreenchange', function() {
+      document.getElementById('fs-btn').textContent =
+        document.fullscreenElement ? '\u29c9' : '\u26f6'; // ⧉ vs ⛶
+    });
+
+    // Ctrl+B = toggle bar from anywhere (keyboard-only UX)
+    document.addEventListener('keydown', function(e) {
+      if (e.ctrlKey && e.key === 'b') { e.preventDefault(); toggleBar(); }
+    });
+    // ── End toolbar hide / fullscreen ────────────────────────────────────────
 
     function toggleAudio() {
       if (!on) {
