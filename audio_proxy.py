@@ -590,6 +590,7 @@ WRAPPER_HTML = textwrap.dedent("""\
             rightClick(lastX, lastY);
           } else if (!twoStart) {
             sendMouse('mouseup', lastX, lastY, 0, 0);
+            sendMouse('click',   lastX, lastY, 0, 0);
           }
           twoStart = false; twoMoved = false;
         } else if (e.touches.length === 1 && twoStart) {
@@ -629,6 +630,13 @@ WRAPPER_HTML = textwrap.dedent("""\
         if (gameMode) return;
         var p = mousePos(e);
         sendMouse('mouseup', p.x, p.y, e.button, e.buttons);
+      });
+      // click must be forwarded explicitly — synthetic mousedown+mouseup are
+      // untrusted so browsers never auto-generate a click from them.
+      overlay.addEventListener('click', function(e) {
+        if (gameMode) return;
+        var p = mousePos(e);
+        sendMouse('click', p.x, p.y, e.button, e.buttons);
       });
       overlay.addEventListener('mousemove', function(e) {
         if (gameMode) return;
