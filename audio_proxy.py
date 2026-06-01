@@ -499,12 +499,18 @@ WRAPPER_HTML = textwrap.dedent("""\
       }
 
       function sendMouse(type, x, y, button, buttons) {
-        var canvas = getVncCanvas();
-        if (!canvas) return;
+        var frame = getFrame();
+        if (!frame || !frame.contentDocument) return;
+        // Dispatch to the real element at (x,y) in the iframe so noVNC sidebar
+        // buttons, dropdowns, and other overlaid UI elements receive clicks,
+        // not just the canvas underneath them.
+        var target = frame.contentDocument.elementFromPoint(x, y)
+                     || getVncCanvas();
+        if (!target) return;
         try {
-          canvas.dispatchEvent(new MouseEvent(type, {
+          target.dispatchEvent(new MouseEvent(type, {
             bubbles: true, cancelable: true,
-            view: getFrame().contentWindow,
+            view: frame.contentWindow,
             screenX: x, screenY: y, clientX: x, clientY: y,
             button: button || 0, buttons: buttons !== undefined ? buttons : 0,
           }));
