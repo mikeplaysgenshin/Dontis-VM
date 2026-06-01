@@ -498,17 +498,17 @@ WRAPPER_HTML = textwrap.dedent("""\
         };
       }
 
-      function sendMouse(type, x, y, button, buttons) {
+      // Dispatch a mouse event directly to the noVNC canvas.
+      // mousedown/mouseup/mousemove MUST go here — noVNC's setCapture polyfill
+      // creates a full-screen capture proxy div (z-index 10000) on mousedown,
+      // which would fool elementFromPoint on every subsequent call.
+      function sendToCanvas(type, x, y, button, buttons) {
         var frame = getFrame();
-        if (!frame || !frame.contentDocument) return;
-        // Dispatch to the real element at (x,y) in the iframe so noVNC sidebar
-        // buttons, dropdowns, and other overlaid UI elements receive clicks,
-        // not just the canvas underneath them.
-        var target = frame.contentDocument.elementFromPoint(x, y)
-                     || getVncCanvas();
-        if (!target) return;
+        var canvas = getVncCanvas();
+        if (!frame || !canvas) return;
         try {
-          target.dispatchEvent(new MouseEvent(type, {
+          var ME = frame.contentWindow.MouseEvent || MouseEvent;
+          canvas.dispatchEvent(new ME(type, {
             bubbles: true, cancelable: true,
             view: frame.contentWindow,
             screenX: x, screenY: y, clientX: x, clientY: y,
@@ -517,9 +517,34 @@ WRAPPER_HTML = textwrap.dedent("""\
         } catch(e) {}
       }
 
+      // Dispatch a click to whatever element actually sits at (x,y) inside the
+      // iframe — needed for noVNC sidebar buttons and other overlay UI that
+      // respond to click, not raw mousedown/mouseup.
+      function sendClick(x, y) {
+        var frame = getFrame();
+        if (!frame || !frame.contentDocument) return;
+        var target = frame.contentDocument.elementFromPoint(x, y) || getVncCanvas();
+        if (!target) return;
+        try {
+          var ME = frame.contentWindow.MouseEvent || MouseEvent;
+          target.dispatchEvent(new ME('click', {
+            bubbles: true, cancelable: true,
+            view: frame.contentWindow,
+            screenX: x, screenY: y, clientX: x, clientY: y,
+            button: 0, buttons: 0,
+          }));
+        } catch(e) {}
+      }
+
+      // Keep sendMouse as alias used by touch scroll / long-press paths
+      function sendMouse(type, x, y, button, buttons) {
+        if (type === 'click') { sendClick(x, y); }
+        else { sendToCanvas(type, x, y, button, buttons); }
+      }
+
       function rightClick(x, y) {
-        sendMouse('mousedown', x, y, 2, 2);
-        sendMouse('mouseup',   x, y, 2, 0);
+        sendToCanvas('mousedown', x, y, 2, 2);
+        sendToCanvas('mouseup',   x, y, 2, 0);
       }
 
       function cancelLong() {
@@ -624,29 +649,28 @@ WRAPPER_HTML = textwrap.dedent("""\
         if (gameMode) return;
         var p = mousePos(e);
         try { getFrame().contentWindow.focus(); } catch(ex) {}
-        sendMouse('mousedown', p.x, p.y, e.button, e.buttons);
+        sendToCanvas('mousedown', p.x, p.y, e.button, e.buttons);
       });
       overlay.addEventListener('mouseup', function(e) {
         if (gameMode) return;
         var p = mousePos(e);
-        sendMouse('mouseup', p.x, p.y, e.button, e.buttons);
+        sendToCanvas('mouseup', p.x, p.y, e.button, e.buttons);
       });
-      // click must be forwarded explicitly — synthetic mousedown+mouseup are
-      // untrusted so browsers never auto-generate a click from them.
+      // click → elementFromPoint so noVNC sidebar buttons / UI panels fire too
       overlay.addEventListener('click', function(e) {
         if (gameMode) return;
         var p = mousePos(e);
-        sendMouse('click', p.x, p.y, e.button, e.buttons);
+        sendClick(p.x, p.y);
       });
       overlay.addEventListener('mousemove', function(e) {
         if (gameMode) return;
         var p = mousePos(e);
-        sendMouse('mousemove', p.x, p.y, e.button, e.buttons);
+        sendToCanvas('mousemove', p.x, p.y, e.button, e.buttons);
       });
       overlay.addEventListener('dblclick', function(e) {
         if (gameMode) return;
         var p = mousePos(e);
-        sendMouse('dblclick', p.x, p.y, e.button, e.buttons);
+        sendToCanvas('dblclick', p.x, p.y, e.button, e.buttons);
       });
       overlay.addEventListener('contextmenu', function(e) {
         e.preventDefault();
