@@ -33,6 +33,7 @@ PDF_EXTS   = ('.pdf',)
 ARCH_EXTS  = ('.zip', '.tar', '.tar.gz', '.tgz', '.tar.bz2',
               '.tar.xz', '.7z', '.rar', '.gz', '.bz2', '.xz')
 
+
 # Chromium binary — look it up once at startup from the known Nix store path
 # used by start.sh, falling back to PATH so this keeps working after upgrades.
 _CHROMIUM_BIN = '/nix/store/884ygjschxqkrkpkrhq83bicvzgj7vb8-chromium-unwrapped-138.0.7204.100/libexec/chromium/chromium'
@@ -1301,7 +1302,8 @@ def _launch_in_vm(argv, settle=2.0):
     env = dict(os.environ,
                DISPLAY=':1',
                PULSE_SERVER='/var/run/pulse/native',
-               HOME=os.path.expanduser('~'))
+               HOME=os.path.expanduser('~'),
+               XDG_RUNTIME_DIR='/tmp/runtime-runner')
     # Replit ships needed system libs across two env vars; downloaded binaries
     # don't inherit them, so merge both into LD_LIBRARY_PATH.
     parts = [p for p in (env.get('REPLIT_LD_LIBRARY_PATH', ''),
