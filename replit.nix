@@ -1,5 +1,6 @@
 {pkgs}: {
   deps = [
+    pkgs.fuse
     pkgs.mgba
     pkgs.gcc-unwrapped
     pkgs.zlib
