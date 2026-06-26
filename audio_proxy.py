@@ -1353,15 +1353,21 @@ def _handle_run_file(client, headers_buf):
 
         lower = name.lower()
 
-        # Sniff first bytes to detect ELF / shebang regardless of extension
+        # Sniff first bytes to detect ELF / AppImage / shebang regardless of extension
         try:
             with open(real_target, 'rb') as f:
-                magic = f.read(8)
+                magic = f.read(16)
         except Exception:
             magic = b''
 
-        if lower.endswith('.appimage'):
-            # --appimage-extract-and-run avoids needing FUSE in containers
+        # AppImage has ELF magic AND the two-byte marker 'AI' (0x41 0x49) at offset 8.
+        # Check by magic bytes first so misnamed files (e.g. download.html) still work.
+        is_appimage = (magic.startswith(b'\x7fELF') and len(magic) >= 10
+                       and magic[8:10] == b'\x41\x49')
+        is_appimage = is_appimage or lower.endswith('.appimage')
+
+        if is_appimage:
+            # --appimage-extract-and-run unpacks squashfs without FUSE (unavailable here)
             os.chmod(real_target, os.stat(real_target).st_mode | 0o755)
             argv = [real_target, '--appimage-extract-and-run']
 

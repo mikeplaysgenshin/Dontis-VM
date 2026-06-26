@@ -1,5 +1,8 @@
 {pkgs}: {
   deps = [
+    pkgs.xorg.libICE
+    pkgs.xorg.libSM
+    pkgs.harfbuzz
     pkgs.fuse
     pkgs.mgba
     pkgs.gcc-unwrapped
