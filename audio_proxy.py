@@ -36,8 +36,9 @@ WRAPPER_HTML = textwrap.dedent("""\
       background: #161b22; border-bottom: 1px solid #30363d;
       padding: 4px 12px; height: 40px; flex-shrink: 0;
       color: #e6edf3; font-size: 12px; user-select: none;
-      overflow-x: auto; overflow-y: hidden;
+      overflow-x: auto; overflow-y: visible;
       white-space: nowrap; scrollbar-width: none;
+      position: relative; z-index: 100;
     }
     #audio-bar::-webkit-scrollbar { display: none; }
     #audio-bar > * { flex-shrink: 0; }
@@ -126,7 +127,7 @@ WRAPPER_HTML = textwrap.dedent("""\
     /* -------------------------------------------------------------------- */
     .menu-wrap { position: relative; display: inline-block; }
     .menu-pop {
-      display: none; position: absolute; top: 110%; left: 0; z-index: 1000;
+      display: none; position: fixed; z-index: 2000;
       background: #161b22; border: 1px solid #30363d; border-radius: 6px;
       min-width: 320px; max-width: 480px; max-height: 60vh; overflow: auto;
       box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 6px;
@@ -915,7 +916,12 @@ WRAPPER_HTML = textwrap.dedent("""\
     function toggleFilesMenu() {
       var opening = !filesMenu.classList.contains('open');
       filesMenu.classList.toggle('open');
-      if (opening) refreshFiles();
+      if (opening) {
+        var rect = filesBtn.getBoundingClientRect();
+        filesMenu.style.top  = rect.bottom + 4 + 'px';
+        filesMenu.style.left = rect.left + 'px';
+        refreshFiles();
+      }
     }
 
     function showRunError(name, msg) {
