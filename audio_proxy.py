@@ -190,7 +190,6 @@ WRAPPER_HTML = textwrap.dedent("""\
     <div class="menu-wrap">
       <button id="files-btn" class="bar-btn secondary" onclick="toggleFilesMenu()"
               title="List files in ~/Downloads inside the VM and open them">&#128193; Downloads &#9662;</button>
-      <div id="files-menu" class="menu-pop"></div>
     </div>
     <span id="paste-status"></span>
     <span id="status">Sound off</span>
@@ -211,6 +210,9 @@ WRAPPER_HTML = textwrap.dedent("""\
   <div id="game-overlay"></div>
   <!-- Hint shown to user when game mode is active -->
   <div id="game-hint"></div>
+  <!-- Downloads dropdown — direct child of body so it is in the root stacking
+       context and never clipped or buried by #audio-bar's stacking context -->
+  <div id="files-menu" class="menu-pop"></div>
   <script>
     // Raw PCM Web Audio API player
     // Server sends s16le stereo 44100Hz binary frames over WebSocket
