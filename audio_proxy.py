@@ -8,6 +8,7 @@ Proxy on port 5000:
   *                  -> forwarded to noVNC/websockify on port 4998
 """
 import os
+import shutil
 import socket
 import threading
 import subprocess
@@ -20,6 +21,23 @@ import textwrap
 LISTEN_PORT = 5000
 NOVNC_PORT  = 4998
 WS_MAGIC    = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+
+# ── File-type sets used by the Downloads launcher ───────────────────────────
+IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp',
+              '.ico', '.tiff', '.tif', '.svg', '.ppm', '.pbm')
+VIDEO_EXTS = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv',
+              '.wmv', '.m4v', '.mpg', '.mpeg', '.3gp', '.ts')
+AUDIO_EXTS = ('.mp3', '.ogg', '.wav', '.flac', '.aac', '.m4a',
+              '.opus', '.wma', '.mid', '.midi')
+PDF_EXTS   = ('.pdf',)
+ARCH_EXTS  = ('.zip', '.tar', '.tar.gz', '.tgz', '.tar.bz2',
+              '.tar.xz', '.7z', '.rar', '.gz', '.bz2', '.xz')
+
+# Chromium binary — look it up once at startup from the known Nix store path
+# used by start.sh, falling back to PATH so this keeps working after upgrades.
+_CHROMIUM_BIN = '/nix/store/884ygjschxqkrkpkrhq83bicvzgj7vb8-chromium-unwrapped-138.0.7204.100/libexec/chromium/chromium'
+if not os.path.isfile(_CHROMIUM_BIN):
+    _CHROMIUM_BIN = shutil.which('chromium') or shutil.which('chromium-browser') or ''
 
 WRAPPER_HTML = textwrap.dedent("""\
 <!DOCTYPE html>
@@ -1205,7 +1223,7 @@ def _handle_paste(client, headers_buf):
             pass
 
 
-DOWNLOADS_DIR = os.path.realpath(os.path.expanduser('~/Downloads'))
+DOWNLOADS_DIR = '/home/runner/workspace/persistent/Downloads'
 
 
 def _read_post_body(client, headers_buf, max_bytes=4096):
@@ -1314,62 +1332,91 @@ def _launch_in_vm(argv, settle=2.0):
 
 
 def _handle_run_file(client, headers_buf):
-    """POST /run: body is a filename inside ~/Downloads. chmod +x and launch it
-    in the VM under DISPLAY=:1, choosing a sensible launcher for the file type."""
+    """POST /run: body is a filename inside the persistent Downloads dir.
+    Chooses the right launcher based on file type so media files open
+    in a viewer instead of being executed as binaries."""
     try:
         name = _read_post_body(client, headers_buf, max_bytes=512).decode('utf-8', 'replace').strip()
         if not name:
             _send_simple(client, '400 Bad Request', 'empty filename'); return
 
-        # Resolve and confine to ~/Downloads (block path traversal)
-        target = os.path.realpath(os.path.join(DOWNLOADS_DIR, name))
-        if not target.startswith(DOWNLOADS_DIR + os.sep) or not os.path.isfile(target):
+        # Resolve and confine to the downloads dir (block path traversal)
+        target = os.path.join(DOWNLOADS_DIR, name)
+        # Normalise without following symlinks so the containment check works
+        # even if DOWNLOADS_DIR itself is a symlink (it isn't now, but be safe).
+        real_target = os.path.realpath(target)
+        real_base   = os.path.realpath(DOWNLOADS_DIR)
+        if not real_target.startswith(real_base + os.sep) or not os.path.isfile(real_target):
             _send_simple(client, '404 Not Found', f'no such file: {name}'); return
 
-        # Make sure the file is executable (downloads come without +x)
-        try:
-            st = os.stat(target)
-            os.chmod(target, st.st_mode | 0o755)
-        except Exception:
-            pass
-
         lower = name.lower()
-        # Sniff the first few bytes so we handle text scripts and ELFs correctly
+
+        # Sniff first bytes to detect ELF / shebang regardless of extension
         try:
-            with open(target, 'rb') as f:
-                head = f.read(8)
+            with open(real_target, 'rb') as f:
+                magic = f.read(8)
         except Exception:
-            head = b''
+            magic = b''
 
         if lower.endswith('.appimage'):
-            # --appimage-extract-and-run avoids needing FUSE, which is missing in containers
-            argv = [target, '--appimage-extract-and-run']
-        elif lower.endswith(('.sh', '.bash')) or head.startswith(b'#!'):
-            # Shell script (or anything with a shebang) — let the kernel pick the interpreter
-            argv = [target]
-        elif head.startswith(b'\x7fELF'):
-            argv = [target]
+            # --appimage-extract-and-run avoids needing FUSE in containers
+            os.chmod(real_target, os.stat(real_target).st_mode | 0o755)
+            argv = [real_target, '--appimage-extract-and-run']
+
+        elif lower.endswith(('.sh', '.bash')) or magic.startswith(b'#!'):
+            os.chmod(real_target, os.stat(real_target).st_mode | 0o755)
+            argv = [real_target]
+
+        elif magic.startswith(b'\x7fELF'):
+            os.chmod(real_target, os.stat(real_target).st_mode | 0o755)
+            argv = [real_target]
+
+        elif lower.endswith(IMAGE_EXTS):
+            # ImageMagick 'display' is available and handles all common image formats
+            argv = ['display', real_target]
+
+        elif lower.endswith(VIDEO_EXTS):
+            # ffplay is available in the Replit runtime path; plays without a GUI chrome
+            argv = ['ffplay', '-autoexit', real_target]
+
+        elif lower.endswith(AUDIO_EXTS):
+            argv = ['ffplay', '-nodisp', '-autoexit', real_target]
+
+        elif lower.endswith(PDF_EXTS):
+            if _CHROMIUM_BIN:
+                argv = [_CHROMIUM_BIN, '--new-window', f'file://{real_target}']
+            else:
+                _send_simple(client, '400 Bad Request',
+                             'No PDF viewer found. Open a terminal in the VM and use xpdf or evince.'); return
+
         elif lower.endswith('.deb'):
             _send_simple(client, '400 Bad Request',
                          '.deb packages need apt/dpkg with sudo, which is not available in this VM. '
                          'Look for an AppImage or static binary instead.'); return
-        elif lower.endswith(('.zip', '.tar', '.tar.gz', '.tgz', '.7z', '.rar')):
+
+        elif lower.endswith(ARCH_EXTS):
             _send_simple(client, '400 Bad Request',
                          'This is an archive, not an executable. Open a terminal in the VM '
-                         '(right-click the desktop) and extract it first.'); return
+                         '(right-click the desktop → Terminal) and extract it with: '
+                         f'unzip "{name}" or tar xf "{name}"'); return
+
+        elif lower.endswith('.exe'):
+            _send_simple(client, '400 Bad Request',
+                         '.exe files are Windows executables and cannot run in this Linux VM. '
+                         'Look for a Linux AppImage or binary instead.'); return
+
         else:
-            # Best-effort: assume it's a binary the user wants to run
-            argv = [target]
+            # Best-effort: try running it; user will see stderr if it fails
+            os.chmod(real_target, os.stat(real_target).st_mode | 0o755)
+            argv = [real_target]
 
         proc, err = _launch_in_vm(argv)
         if proc.poll() is None:
-            _send_simple(client, '200 OK', f'launched: {os.path.basename(target)}')
+            _send_simple(client, '200 OK', f'launched: {os.path.basename(real_target)}')
         else:
-            # Process died fast — return the captured stderr so the user can see
-            # the real failure reason (missing library, segfault, etc.).
             tail = err[-1500:] if err else f'process exited with code {proc.returncode} and produced no error output'
             _send_simple(client, '500 Internal Server Error',
-                         f'{os.path.basename(target)} exited immediately:\n\n{tail}')
+                         f'{os.path.basename(real_target)} exited immediately:\n\n{tail}')
     except Exception as e:
         _send_simple(client, '500 Internal Server Error', f'run failed: {e}')
     finally:
