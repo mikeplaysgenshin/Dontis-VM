@@ -175,6 +175,14 @@ exec "$MGBA_BIN" "\$@"
 EOF
 chmod +x /tmp/blobevm-launch-mgba.sh
 
+# Terminal init: source the Replit bashrc (sets Nix PATH etc.) then land in
+# ~/Downloads so the user can unzip/run files without typing a full path.
+cat > /tmp/blobevm-terminal-init.sh <<'INIT_EOF'
+[ -f ~/.bashrc ] && source ~/.bashrc
+cd ~/Downloads
+INIT_EOF
+chmod +x /tmp/blobevm-terminal-init.sh
+
 cat > /tmp/blobevm-launch-terminal.sh <<EOF
 #!/bin/bash
 export DISPLAY=:${DISPLAY_NUM}
@@ -191,7 +199,7 @@ exec "$XTERM" -fa Monospace -fs 12 -title Terminal \\
       Ctrl Shift <Key> V: insert-selection(CLIPBOARD) \\n\\
       Ctrl Shift <Key> C: copy-selection(CLIPBOARD) \\n\\
       Shift <Key> Insert: insert-selection(PRIMARY)' \\
-  -hold -e bash
+  -hold -e bash --init-file /tmp/blobevm-terminal-init.sh
 EOF
 chmod +x /tmp/blobevm-launch-terminal.sh
 
